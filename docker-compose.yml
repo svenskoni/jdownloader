@@ -1,0 +1,70 @@
+services:
+  # Einmaliger Init-Schritt vor jedem JD-Start: schaltet die lokale JD-API (Port 3128)
+  # in der Config frei. Beendet sich danach (Status "exited" in Portainer ist normal).
+  jd-init:
+    build: ./webui
+    image: jd-webui:local
+    container_name: jd-init
+    user: "1000:1000"            # = USER_ID/GROUP_ID von jdownloader
+    command: ["python", "/app/jd_init.py"]
+    environment:
+      - JD_CFG_DIR=/jdconfig/cfg
+    volumes:
+      - /opt/jdownloader/config:/jdconfig:rw
+    network_mode: none
+    restart: "no"
+
+  jdownloader:
+    image: jlesage/jdownloader-2:latest   # später auf feste Version pinnen (Tags auf Docker Hub)
+    container_name: jdownloader
+    restart: unless-stopped
+    depends_on:
+      jd-init:
+        condition: service_completed_successfully
+    ports:
+      - 5800:5800
+    environment:
+      - USER_ID=1000
+      - GROUP_ID=1000
+      - TZ=Europe/Berlin
+      - KEEP_APP_RUNNING=1
+      - JDOWNLOADER_MAX_MEM=1G
+      - SECURE_CONNECTION=1
+      - WEB_AUTHENTICATION=1
+      - WEB_AUTHENTICATION_USERNAME=${JD_USER}
+      - WEB_AUTHENTICATION_PASSWORD=${JD_PASS}
+    volumes:
+      - /opt/jdownloader/config:/config:rw
+      - /opt/jdownloader/downloads:/output:rw   # später auf die HDD ändern
+    networks:
+      - proxy-network
+      - jd-internal
+
+  # Eigene Web-Oberfläche (plain HTTP, nur Intranet)
+  jd-webui:
+    build: ./webui
+    image: jd-webui:local
+    container_name: jd-webui
+    restart: unless-stopped
+    depends_on:
+      - jdownloader
+    ports:
+      - ${WEBUI_PORT:-8080}:8080
+    environment:
+      - TZ=Europe/Berlin
+      - JD_API_URL=http://jdownloader:3128
+      - WEBUI_USER=${JD_USER}
+      - WEBUI_PASS=${JD_PASS}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      - jd-internal
+
+networks:
+  proxy-network:
+    external: true
+  jd-internal:
+    driver: bridge

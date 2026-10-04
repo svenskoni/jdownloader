@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>JD WebUI</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='%233b82f6' d='M7 1h2v8l3-3 1.4 1.4L8 12.8 2.6 7.4 4 6l3 3z'/%3E%3Crect x='2' y='13' width='12' height='2' fill='%233b82f6'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="static/style.css">
+</head>
+<body>
+  <header class="top">
+    <div class="top-inner">
+      <div class="brand">JD WebUI</div>
+      <div class="state">
+        <span id="stateBadge" class="badge s-unknown">…</span>
+        <span id="speed" class="speed">–</span>
+      </div>
+      <div class="controls">
+        <button id="btnStart" class="btn primary" type="button">▶ Start</button>
+        <button id="btnPause" class="btn" type="button">⏸ Halt</button>
+        <button id="btnStop" class="btn" type="button">⏹ Stop</button>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section class="card now">
+      <div class="now-label">Aktuell</div>
+      <div id="activity" class="activity">Verbinde mit JDownloader …</div>
+      <div class="total">
+        <div class="pbar"><i id="totalBar"></i></div>
+        <div id="totalTxt" class="muted small"></div>
+      </div>
+    </section>
+
+    <div id="grabberBanner" class="banner" hidden>
+      <span id="grabberTxt"></span>
+      <button id="btnConfirmAll" class="btn sm" type="button">Alle übernehmen</button>
+    </div>
+
+    <section class="card">
+      <h2>Hinzufügen</h2>
+      <form id="addForm" autocomplete="off">
+        <textarea id="urls" rows="3" placeholder="URL einfügen (mehrere: eine pro Zeile)"></textarea>
+        <div class="add-row">
+          <input id="pkgName" type="text" placeholder="Paketname (optional)">
+          <input id="pwd" type="text" placeholder="Archiv-Passwort (optional)">
+        </div>
+        <div class="add-row">
+          <label class="check"><input id="autostart" type="checkbox" checked> Sofort starten</label>
+          <button id="btnAdd" class="btn primary" type="submit">Hinzufügen</button>
+        </div>
+      </form>
+      <div id="drop" class="drop" tabindex="0" role="button">
+        <strong>DLC-Datei</strong> hierher ziehen oder <u>auswählen</u>
+        <input id="dlcInput" type="file" accept=".dlc,.ccf,.rsdf" multiple hidden>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="list-head">
+        <h2>Downloads <span id="pkgCount" class="muted"></span></h2>
+        <button id="btnCleanup" class="btn sm" type="button">Fertige entfernen</button>
+      </div>
+      <div id="warn" class="warn" hidden></div>
+      <div id="packages" class="packages"></div>
+      <div id="empty" class="empty" hidden>Keine Downloads in der Liste.</div>
+    </section>
+  </main>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+  <script src="static/app.js"></script>
+</body>
+</html>
