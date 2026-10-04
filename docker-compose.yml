@@ -4,6 +4,7 @@ services:
   jd-init:
     build: ./webui
     image: jd-webui:local
+    pull_policy: build           # nie von Docker Hub ziehen, bei jedem Deploy neu bauen
     container_name: jd-init
     user: "1000:1000"            # = USER_ID/GROUP_ID von jdownloader
     command: ["python", "/app/jd_init.py"]
@@ -44,6 +45,7 @@ services:
   jd-webui:
     build: ./webui
     image: jd-webui:local
+    pull_policy: build           # nie von Docker Hub ziehen, bei jedem Deploy neu bauen
     container_name: jd-webui
     restart: unless-stopped
     depends_on:
