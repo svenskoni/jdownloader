@@ -36,7 +36,8 @@ services:
       - WEB_AUTHENTICATION_PASSWORD=${JD_PASS}
     volumes:
       - /opt/jdownloader/config:/config:rw
-      - /opt/jdownloader/downloads:/output:rw   # später auf die HDD ändern
+      - /mnt/data_disk/Download:/output:rw   # HDD: Downloads (JD-Standardordner /output)
+      - /mnt/data_disk/Fertig:/fertig:rw     # HDD: Ziel fürs Entpacken (in JD einstellen, siehe README)
     networks:
       - proxy-network
       - jd-internal

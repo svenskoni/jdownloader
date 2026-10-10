@@ -34,7 +34,7 @@ webui/...
 
 ### 2. Alten JDownloader-Stack entfernen
 Der neue Stack verwendet wieder den Containernamen `jdownloader`. Stoppe und entferne deshalb in Portainer den bisherigen Stack bzw. Container.
-Deine Daten unter `/opt/jdownloader/config` und `/opt/jdownloader/downloads` bleiben erhalten.
+Die JD-Konfiguration unter `/opt/jdownloader/config` bleibt erhalten.
 
 ### 3. Stack in Portainer anlegen
 *Stacks → Add stack*
@@ -66,6 +66,18 @@ Optional kannst du die API direkt testen (Konsole des `jd-webui`-Containers in P
 ```sh
 wget -qO- http://jdownloader:3128/jd/version
 ```
+
+### 5. Download-Ordner (HDD)
+Die Downloads liegen auf der Daten-HDD des Docker-Hosts, die dort unter `/mnt/data_disk` eingehängt ist:
+
+| Auf dem Host | Im Container | Zweck |
+|---|---|---|
+| `/mnt/data_disk/Download` | `/output` | Download-Ordner (Standard von JD in diesem Image) |
+| `/mnt/data_disk/Fertig` | `/fertig` | Ziel fürs Entpacken |
+
+Das Entpack-Ziel einmalig in der JD-GUI (Port 5800) setzen: *Einstellungen → Archiv-Entpacker*, „Entpacken nach“ auf `/fertig`. Unter *Einstellungen → Allgemein* sollte als Download-Ordner `/output` stehen.
+
+Die HDD muss eingehängt sein, bevor der Stack startet. Fehlt sie, legt Docker die Ordner leer auf der Systemplatte an und JD lädt dorthin.
 
 ### Updates
 Nach Änderungen im Repo: *Stack → Pull and redeploy*. Taucht die Änderung danach nicht auf, lösche unter *Images* das Image `jd-webui:local` und führe den Redeploy noch einmal aus.
