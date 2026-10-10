@@ -41,7 +41,7 @@ services:
       - proxy-network
       - jd-internal
 
-  # Eigene Web-Oberfläche (plain HTTP, nur Intranet)
+  # Eigene Web-Oberfläche (plain HTTP, nur Intranet) + Click'n'Load-Empfänger
   jd-webui:
     build: ./webui
     image: jd-webui:local
@@ -52,11 +52,14 @@ services:
       - jdownloader
     ports:
       - ${WEBUI_PORT:-8080}:8080
+      - ${CNL_PORT:-9666}:9666   # Click'n'Load, ohne Login - Zugriff über CNL_ALLOWED beschränken
     environment:
       - TZ=Europe/Berlin
       - JD_API_URL=http://jdownloader:3128
       - WEBUI_USER=${JD_USER}
       - WEBUI_PASS=${JD_PASS}
+      - CNL_ALLOWED=${CNL_ALLOWED:-}         # z. B. IP deines PCs; leer = jede Adresse
+      - CNL_AUTOSTART=${CNL_AUTOSTART:-true} # Downloads nach Click'n'Load sofort starten
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
       interval: 30s

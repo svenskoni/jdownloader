@@ -5,7 +5,7 @@ Portainer-Stack aus drei Teilen:
 | Service | Aufgabe |
 |---|---|
 | `jdownloader` | `jlesage/jdownloader-2`, unverändert (GUI auf 5800 über deinen nginx-Proxy) |
-| `jd-webui` | Schlanke Web-Oberfläche auf **http://&lt;server&gt;:8080** (plain HTTP, Login) |
+| `jd-webui` | Schlanke Web-Oberfläche auf **http://&lt;server&gt;:8080** (plain HTTP, Login) und Click'n'Load-Empfänger auf **Port 9666** |
 | `jd-init` | Läuft vor jedem JD-Start kurz durch und schaltet die lokale JD-API frei, danach beendet er sich |
 
 **Was die Oberfläche kann:**
@@ -15,6 +15,7 @@ Portainer-Stack aus drei Teilen:
 - Anzeige **„Aktuell“**, also was JD gerade macht, z. B. „Lädt 2 Dateien · Entpackt »Film«“, dazu der Gesamtfortschritt
 - Pro Paket: Phase (Download / Entpacken / Entpacken wartet / Fertig / Fehler), Fortschritt in %, Größe, Geschwindigkeit, Restzeit und der Statustext von JD
 - Pakete aus der Liste entfernen und „Fertige entfernen“ (die Dateien bleiben dabei immer erhalten)
+- **Click'n'Load** von Download-Seiten annehmen (siehe [Click'n'Load](#clicknload))
 
 Neue Links und Container landen zuerst im Linkgrabber von JDownloader. Die WebUI übernimmt sie automatisch in die Download-Liste, sobald JD sie fertig geprüft hat. Bei „Sofort starten“ wird der Download auch gleich gestartet. Bleibt doch einmal etwas im Linkgrabber hängen, erscheint ein Hinweis mit dem Button **„Alle übernehmen“**.
 
@@ -50,6 +51,9 @@ Deine Daten unter `/opt/jdownloader/config` und `/opt/jdownloader/downloads` ble
 | `JD_USER` | Login für die JD-GUI (5800) **und** die neue WebUI |
 | `JD_PASS` | Passwort dazu |
 | `WEBUI_PORT` | optional, Standard `8080` |
+| `CNL_ALLOWED` | empfohlen: IP-Adresse(n) oder Netze, die Click'n'Load schicken dürfen, z. B. `10.200.0.10` oder `10.200.0.10, 192.168.1.0/24`. Leer = jede Adresse |
+| `CNL_PORT` | optional, Port für Click'n'Load auf dem Server, Standard `9666` |
+| `CNL_AUTOSTART` | optional, `false` = per Click'n'Load übernommene Pakete nicht sofort starten. Standard `true` |
 
 Danach auf **Deploy the stack** klicken. Beim ersten Mal baut Portainer das WebUI-Image, das dauert etwa eine Minute.
 
@@ -65,6 +69,52 @@ wget -qO- http://jdownloader:3128/jd/version
 
 ### Updates
 Nach Änderungen im Repo: *Stack → Pull and redeploy*. Taucht die Änderung danach nicht auf, lösche unter *Images* das Image `jd-webui:local` und führe den Redeploy noch einmal aus.
+
+---
+
+## Click'n'Load
+
+Download-Seiten schicken die Links beim Klick auf den Click'n'Load-Button an `http://127.0.0.1:9666`, also an einen JDownloader **auf dem eigenen PC**. Damit sie beim Server ankommen, braucht der Browser-PC eine Brücke dorthin. Die WebUI nimmt die Daten auf Port 9666 an, entschlüsselt die Links und übergibt sie an JDownloader. Mit `CNL_AUTOSTART=true` werden sie automatisch in die Download-Liste übernommen und gestartet. Alles bleibt im LAN, MyJDownloader wird nicht gebraucht.
+
+Auf dem Server ist dafür nur eines zu tun: In Portainer `CNL_ALLOWED` auf die IP(s) der PCs setzen, von denen Click'n'Load kommen darf, und den Stack neu deployen. Für die Brücke am PC gibt es zwei Wege.
+
+### Variante A: Chrome-Erweiterung (empfohlen)
+Funktioniert in Chrome, Edge und Brave, auf jedem Gerät und ohne Änderungen an Windows. Der Ordner `extension/` in diesem Repo ist die Erweiterung.
+
+1. Repo auf den PC holen (GitHub: *Code → Download ZIP*, entpacken). Den Ordner danach **nicht löschen oder verschieben**, der Browser lädt die Erweiterung von dort.
+2. `chrome://extensions` öffnen (Edge: `edge://extensions`), **Entwicklermodus** einschalten, **Entpackte Erweiterung laden** und den Ordner `extension` auswählen.
+3. Erweiterung an die Symbolleiste anheften, Symbol anklicken, Adresse des Click'n'Load-Ports eintragen, z. B. `http://192.168.1.10:9666`, und **Speichern**. Erwartet: „Verbunden. WebUI und JDownloader erreichbar.“
+4. Auf einer Download-Seite den Click'n'Load-Button drücken. Es erscheint eine Benachrichtigung, und in der WebUI steht unter dem DLC-Feld „Click'n'Load zuletzt …“.
+
+So funktioniert sie:
+```
+Seite ──► 127.0.0.1:9666 ──(von der Erweiterung umgeleitet)──► Antwort aus der Erweiterung („success“)
+             └─ Formulardaten mitgelesen ──► http://<server>:9666 (jd-webui) ──API──► jdownloader:3128
+```
+Die Seite bekommt ihre Antwort direkt von der Erweiterung, die Daten schickt die Erweiterung im Hintergrund an den Server. Eine direkte Umleitung von HTTPS-Seiten wie filecrypt auf `http://<server>` würde Chrome als Mixed Content blockieren, so dagegen reicht reines HTTP im LAN, ein Zertifikat ist nicht nötig. Weil die Seite immer „success“ bekommt, steht das echte Ergebnis in der Benachrichtigung, im Popup der Erweiterung unter „Zuletzt“ und in der WebUI.
+
+Berechtigungen: Die Erweiterung fragt nach Zugriff auf alle Websites. Ohne diesen Zugriff lässt Chrome sie Anfragen, die eine Download-Seite an `127.0.0.1:9666` schickt, weder umleiten noch mitlesen. Sie reagiert nur auf Anfragen an `127.0.0.1:9666` bzw. `localhost:9666` und schickt Daten nur an die eingetragene Adresse. Ist sie im Popup ausgeschaltet (Symbol zeigt „AUS“), verhält sich der Browser wie ohne Erweiterung.
+
+### Variante B: Windows-Portweiterleitung (ohne Erweiterung)
+Gilt für alle Browser auf diesem PC, muss aber auf jedem Windows-PC eingerichtet werden. In einer Eingabeaufforderung **als Administrator** (Server-IP = IP des Docker-Hosts, `hostname -I` auf dem Host):
+```bat
+netsh interface portproxy add v4tov4 listenaddress=127.0.0.1 listenport=9666 connectaddress=SERVER-IP connectport=9666
+```
+Die Weiterleitung bleibt nach einem Neustart erhalten und braucht den Windows-Dienst **IP-Hilfsdienst** (`iphlpsvc`), der normalerweise läuft. Test: `http://127.0.0.1:9666/jdcheck.js` im Browser öffnen, erwartet wird `jdownloader=true;`. Chrome/Edge fragen hier eventuell einmal pro Seite, ob sie auf „Apps und Dienste auf diesem Gerät“ zugreifen darf. Das muss erlaubt werden.
+
+Anzeigen oder entfernen:
+```bat
+netsh interface portproxy show v4tov4
+netsh interface portproxy delete v4tov4 listenaddress=127.0.0.1 listenport=9666
+```
+
+### Für beide Varianten
+- Vom PC zum Docker-Host muss **TCP 9666** erlaubt sein (Firewall/OPNsense, ggf. Proxmox-Firewall an der VM).
+- Ein JDownloader auf dem PC selbst oder eine andere Click'n'Load-Erweiterung kommen sich mit der Brücke in die Quere. Bei Variante A gewinnt die Erweiterung, solange sie aktiv ist. Bei Variante B belegt ein lokaler JDownloader den Port.
+- Nicht beide Varianten gleichzeitig nötig. Ist die Erweiterung aktiv, wird die Portweiterleitung nicht benutzt.
+
+### Grenzen
+Die WebUI liest den Schlüssel aus der `jk`-Funktion der Seite ohne JavaScript-Interpreter. Das deckt den üblichen Fall ab (Funktion gibt einen festen Hex-String zurück). Nutzt eine Seite etwas Exotisches, erscheint „Schlüssel nicht lesbar“. Dann den DLC-Download der Seite verwenden.
 
 ---
 
@@ -85,12 +135,21 @@ Passe bei `jd-init` die Zeile `user: "1000:1000"` an, sonst darf das Init-Skript
 **Port 8080 schon belegt**
 Setze in Portainer die Variable `WEBUI_PORT`, z. B. auf `8090`.
 
+**Click'n'Load kommt nicht an**
+1. Mit der Erweiterung: Symbol anklicken, **Verbindung testen**. Die Meldung sagt, woran es hängt (nicht erreichbar, IP abgelehnt, falscher Port, JDownloader aus). Unter „Zuletzt“ steht das Ergebnis der letzten Übergabe.
+2. Mit der Portweiterleitung: `http://127.0.0.1:9666/jdcheck.js` am PC aufrufen:
+   - Seite lädt nicht: Weiterleitung (`netsh interface portproxy show v4tov4`) oder Firewall prüfen.
+   - HTTP 403: Die WebUI sieht eine andere Absender-IP als in `CNL_ALLOWED`. Im Log von `jd-webui` steht „Click'n'Load von … abgelehnt“ mit der tatsächlichen IP.
+   - HTTP 503 / `jdownloader=false`: WebUI läuft, aber JDownloader ist nicht erreichbar (siehe oben).
+3. Ergebnis der letzten Anfrage steht in der WebUI unter dem DLC-Feld und im Log von `jd-webui`.
+
 ---
 
 ## Sicherheit
 - Die WebUI läuft absichtlich per **plain HTTP** und ist nur fürs Intranet gedacht. Gib Port 8080 im Router **nicht** frei.
 - Login per Basic Auth mit denselben Zugangsdaten wie die JD-GUI.
 - Die JD-API (Port 3128) hat keinen eigenen Login. Sie wird **nicht** nach außen veröffentlicht und ist nur aus den Docker-Netzen `jd-internal` und `proxy-network` erreichbar.
+- Der Click'n'Load-Port (9666) hat **keinen Login**, weil Download-Seiten sich nicht anmelden können. Wer ihn erreicht, kann Links in deinen JDownloader schieben (sonst nichts, die Oberfläche und Steuerung gibt es dort nicht). Deshalb `CNL_ALLOWED` setzen und den Port in der Firewall nur für deinen PC öffnen.
 
 ---
 
@@ -101,15 +160,17 @@ pip install flask
 python dev/mock_jd.py                     # Fake-JDownloader auf Port 3128 (simuliert Download/Entpacken)
 JD_API_URL=http://127.0.0.1:3128 WEBUI_USER=admin WEBUI_PASS=test WEB_PORT=8091 python app.py
 ```
-Danach im Browser `http://127.0.0.1:8091` öffnen. Mit `MOCK_SPEED_MB=40` simuliert der Mock schnellere Downloads.
+Danach im Browser `http://127.0.0.1:8091` öffnen. Mit `MOCK_SPEED_MB=40` simuliert der Mock schnellere Downloads. Der Click'n'Load-Empfänger lauscht dabei auf `127.0.0.1:9666` (anderer Port über `CNL_PORT`).
 
 ## Dateien
 ```
 docker-compose.yml      Portainer-Stack
 webui/Dockerfile        python:3.12-alpine + gunicorn, läuft als UID 1000
-webui/app.py            Backend (Flask): Login, Übersicht, Steuerung, Hinzufügen
+webui/app.py            Backend (Flask): Login, Übersicht, Steuerung, Hinzufügen, Click'n'Load
+webui/cnl.py            Click'n'Load: Schlüssel lesen, Links entschlüsseln, IP-Filter
 webui/jdapi.py          Client für die lokale JD-API
 webui/jd_init.py        Init-Skript: schaltet die JD-API in der Config frei
 webui/static/           Oberfläche (HTML/CSS/JS, keine externen Abhängigkeiten)
 webui/dev/mock_jd.py    Fake-JDownloader für lokale Tests (nicht im Image)
+extension/              Chrome-/Edge-Erweiterung für Click'n'Load (wird nicht ins Image gebaut)
 ```

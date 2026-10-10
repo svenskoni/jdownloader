@@ -192,6 +192,8 @@ textarea:focus, input[type="text"]:focus { outline: 2px solid var(--accent); out
   cursor: pointer;
 }
 .drop:hover, .drop.over, .drop:focus { border-color: var(--accent); color: var(--text); outline: none; }
+.cnl-info { margin-top: 8px; overflow-wrap: anywhere; }
+.cnl-info.err { color: var(--error); }
 
 /* ── Hinweise ──────────────────────────────────────────────── */
 .banner, .warn {

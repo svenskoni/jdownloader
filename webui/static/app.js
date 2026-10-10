@@ -202,11 +202,28 @@ function renderNotices(d) {
   lastNotice = Math.max(lastNotice ?? 0, maxId);
 }
 
+function renderCnl(d) {
+  const last = d.cnl && d.cnl.last;
+  const el = $("#cnlInfo");
+  el.classList.toggle("err", !!(last && !last.ok));
+  if (!last) {
+    setText(el, "Click'n'Load: bereit, noch nichts empfangen");
+    return;
+  }
+  const t = new Date(last.t).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+  let txt = `Click'n'Load zuletzt ${t} · ${last.source}`;
+  if (last.links) txt += ` · ${last.links} Link${last.links !== 1 ? "s" : ""}`;
+  else if (last.msg === "DLC") txt += " · DLC";
+  if (!last.ok) txt += ` · Fehler: ${last.msg}`;
+  setText(el, txt);
+}
+
 function render(d) {
   if (d.ok === false) d = { connected: false, error: d.error, notices: [] };
   renderHeader(d);
   renderNow(d);
   renderPackages(d);
+  renderCnl(d);
   renderNotices(d);
 }
 

@@ -4,6 +4,10 @@ JD WebUI - schlanke Web-Oberfläche für JDownloader (lokale API, Port 3128).
 
 Funktionen: URLs/DLC hinzufügen, Start/Halt/Stop, Fortschritt und aktuelle
 Tätigkeit (Download/Entpacken) anzeigen. Basic Auth über WEBUI_USER/WEBUI_PASS.
+
+Zusätzlich ein Click'n'Load-Empfänger auf eigenem Port (CNL_PORT, Standard 9666):
+dort gibt es nur die CNL-Endpunkte, ohne Login (Download-Seiten können sich nicht
+anmelden), optional beschränkt auf CNL_ALLOWED.
 """
 
 import base64
@@ -16,8 +20,9 @@ import time
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, Response, jsonify, request, send_from_directory
 
+import cnl
 import jdapi
 
 WEBUI_USER = os.environ.get("WEBUI_USER", "")
@@ -25,6 +30,10 @@ WEBUI_PASS = os.environ.get("WEBUI_PASS", "")
 MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "5"))
 # So lange wartet die WebUI nach dem Hinzufügen, bis JD die Links gesammelt hat
 CONFIRM_TIMEOUT = float(os.environ.get("CONFIRM_TIMEOUT", "90"))
+
+# Click'n'Load: Port im Container (gunicorn bindet ihn, siehe Dockerfile)
+CNL_PORT = int(os.environ.get("CNL_PORT", "9666"))
+CNL_AUTOSTART = os.environ.get("CNL_AUTOSTART", "true").strip().lower() not in ("0", "false", "no", "off")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("jd-webui")
@@ -38,6 +47,20 @@ _pool = ThreadPoolExecutor(max_workers=12)
 if not WEBUI_USER:
     log.warning("WEBUI_USER ist leer - die WebUI ist OHNE Login erreichbar!")
 
+try:
+    CNL_ALLOWED = cnl.parse_networks(os.environ.get("CNL_ALLOWED", ""))
+except ValueError as e:
+    # Lieber gar nichts annehmen als versehentlich alles
+    log.error("CNL_ALLOWED ungültig (%s) - Click'n'Load nimmt keine Anfragen an!", e)
+    CNL_ALLOWED = None
+if CNL_ALLOWED == []:
+    log.warning("CNL_ALLOWED ist leer - Click'n'Load (Port %d) nimmt Links von JEDER Adresse an.", CNL_PORT)
+elif CNL_ALLOWED:
+    log.info("Click'n'Load erlaubt für: %s", ", ".join(str(n) for n in CNL_ALLOWED))
+
+CNL_PATHS = {"/jdcheck.js", "/crossdomain.xml", "/flash", "/flash/",
+             "/flash/add", "/flash/addcrypted", "/flash/addcrypted2"}
+
 
 # ── Basic Auth ────────────────────────────────────────────────────────────────
 
@@ -50,8 +73,25 @@ def _auth_ok():
     return user_ok and pass_ok
 
 
+def _on_cnl_port():
+    # gunicorn/werkzeug setzen SERVER_PORT auf den Port des Listeners, nicht aus dem Host-Header
+    return request.environ.get("SERVER_PORT") == str(CNL_PORT)
+
+
 @app.before_request
 def require_login():
+    if _on_cnl_port():
+        # CNL-Port: nur die CNL-Endpunkte, ohne Login, optional nach Absender gefiltert
+        if request.path not in CNL_PATHS:
+            return ("Nicht gefunden", 404)
+        if CNL_ALLOWED is None or not cnl.ip_allowed(request.remote_addr, CNL_ALLOWED):
+            log.warning("Click'n'Load von %s abgelehnt (nicht in CNL_ALLOWED)", request.remote_addr)
+            return ("Nicht erlaubt", 403)
+        if request.method == "OPTIONS":
+            return Response(status=204)
+        return None
+    if request.path in CNL_PATHS:
+        return ("Nicht gefunden", 404)
     if not WEBUI_USER or request.path == "/healthz":
         return None
     if _auth_ok():
@@ -64,6 +104,13 @@ def require_login():
 def no_cache_api(resp):
     resp.headers["X-Content-Type-Options"] = "nosniff"
     if request.path.startswith("/api/"):
+        resp.headers["Cache-Control"] = "no-store"
+    if _on_cnl_port():
+        # Wie JDownloader selbst: Download-Seiten (fremde Origin) dürfen den Port ansprechen
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        resp.headers["Access-Control-Allow-Private-Network"] = "true"
         resp.headers["Cache-Control"] = "no-store"
     return resp
 
@@ -85,6 +132,17 @@ def notice(kind, msg):
         _notice_id += 1
         _notices.append({"id": _notice_id, "type": kind, "msg": msg})
     log.info("%s: %s", kind, msg)
+
+
+# Letzte Click'n'Load-Anfrage (Anzeige in der Oberfläche, hilft beim Einrichten)
+_cnl_last = {}
+_cnl_lock = threading.Lock()
+
+
+def _cnl_record(source, links, ok, msg=""):
+    with _cnl_lock:
+        _cnl_last.clear()
+        _cnl_last.update(t=int(time.time() * 1000), source=source, links=links, ok=ok, msg=msg)
 
 
 # ── Übersicht (ein Aufruf liefert alles fürs Frontend) ────────────────────────
@@ -215,9 +273,12 @@ def build_overview():
 
     with _notice_lock:
         notices = list(_notices)
+    with _cnl_lock:
+        cnl_info = {"last": dict(_cnl_last) if _cnl_last else None}
 
     if not res["state"]["ok"]:
-        return {"ok": True, "connected": False, "error": res["state"]["error"], "notices": notices}
+        return {"ok": True, "connected": False, "error": res["state"]["error"],
+                "notices": notices, "cnl": cnl_info}
 
     state = str(res["state"]["data"] or "").upper()
     links = jdapi.as_list(res["links"])
@@ -248,6 +309,7 @@ def build_overview():
                     "links": sum(g.get("childCount") or 0 for g in grabber)},
         "warning": errors[0] if errors else None,
         "notices": notices,
+        "cnl": cnl_info,
     }
 
 
@@ -430,6 +492,104 @@ def confirm_all():
     return jsonify(r)
 
 
+# ── Click'n'Load (nur auf CNL_PORT erreichbar, siehe require_login) ───────────
+# Antworten im Format von JDownloader: "success" bzw. "failed <grund>", immer HTTP 200.
+
+def _cnl_text(body, status=200, mimetype="text/plain"):
+    return Response(body, status=status, mimetype=mimetype)
+
+
+def _cnl_label():
+    return cnl.source_label(request.values.get("source"), request.headers.get("Referer"))
+
+
+def _cnl_failed(label, msg, links=0):
+    log.warning("Click'n'Load von %s (%s) fehlgeschlagen: %s", label, request.remote_addr, msg)
+    notice("err", f"Click'n'Load ({label}): {msg}")
+    _cnl_record(label, links, False, msg)
+    invalidate()
+    return _cnl_text(f"failed {msg}\r\n")
+
+
+def _cnl_add_links(label, text):
+    links = cnl.count_links(text)
+    package = (request.values.get("package") or "").strip()
+    password = cnl.first_password(request.values.get("passwords"))
+    before = _grabber_uuids()
+    r = jdapi.add_links(text, package, autostart=False, extract_password=password)
+    if not r["ok"]:
+        return _cnl_failed(label, r["error"], links)
+    log.info("Click'n'Load von %s (%s): %d Link(s) an JD übergeben", label, request.remote_addr, links)
+    _cnl_record(label, links, True)
+    _queue_confirm(before, CNL_AUTOSTART, f"Click'n'Load ({package or label})")
+    invalidate()
+    return _cnl_text("success\r\n")
+
+
+@app.get("/jdcheck.js")
+def cnl_jdcheck():
+    # Seiten prüfen damit, ob ein JDownloader lauscht. Ist JD nicht erreichbar, soll die
+    # Seite das auch merken (wie bei einem PC ohne JD) und z. B. DLC anbieten.
+    r = jdapi.call("/jd/version")
+    if not r["ok"]:
+        return _cnl_text("jdownloader=false;\r\n", status=503, mimetype="text/javascript")
+    version = re.sub(r"\D", "", str(r["data"])) or "0"
+    return _cnl_text(f"jdownloader=true;\r\nvar version='{version}';\r\n", mimetype="text/javascript")
+
+
+@app.get("/crossdomain.xml")
+def cnl_crossdomain():
+    return _cnl_text('<?xml version="1.0"?>\r\n'
+                     '<!DOCTYPE cross-domain-policy SYSTEM '
+                     '"http://www.macromedia.com/xml/dtds/cross-domain-policy.dtd">\r\n'
+                     '<cross-domain-policy>\r\n<allow-access-from domain="*" />\r\n'
+                     '</cross-domain-policy>\r\n', mimetype="text/xml")
+
+
+@app.route("/flash", methods=["GET", "POST"])
+@app.route("/flash/", methods=["GET", "POST"])
+def cnl_flash():
+    return _cnl_text("JDownloader\r\n")
+
+
+@app.route("/flash/add", methods=["GET", "POST"])
+def cnl_add():
+    label = _cnl_label()
+    urls = request.values.get("urls") or ""
+    if not cnl.count_links(urls):
+        return _cnl_failed(label, "keine Links übermittelt")
+    return _cnl_add_links(label, urls.replace("\r\n", "\n"))
+
+
+@app.route("/flash/addcrypted2", methods=["GET", "POST"])
+def cnl_addcrypted2():
+    label = _cnl_label()
+    try:
+        key = cnl.parse_key(request.values.get("jk"), request.values.get("k"))
+        text = cnl.decrypt(request.values.get("crypted") or "", key)
+    except cnl.CnlError as e:
+        return _cnl_failed(label, str(e))
+    return _cnl_add_links(label, text)
+
+
+@app.route("/flash/addcrypted", methods=["GET", "POST"])
+def cnl_addcrypted():
+    # Älteres CNL: "crypted" ist der Inhalt einer DLC-Datei
+    label = _cnl_label()
+    content = (request.values.get("crypted") or "").strip()
+    if not content:
+        return _cnl_failed(label, "keine Daten übermittelt (crypted fehlt)")
+    before = _grabber_uuids()
+    r = jdapi.add_container("DLC", base64.b64encode(content.encode()).decode("ascii"))
+    if not r["ok"]:
+        return _cnl_failed(label, r["error"])
+    log.info("Click'n'Load (DLC) von %s (%s) an JD übergeben", label, request.remote_addr)
+    _cnl_record(label, 0, True, "DLC")
+    _queue_confirm(before, CNL_AUTOSTART, f"Click'n'Load ({label})")
+    invalidate()
+    return _cnl_text("success\r\n")
+
+
 # ── Aufräumen ─────────────────────────────────────────────────────────────────
 
 @app.post("/api/downloads/remove")
@@ -465,4 +625,10 @@ def index():
 
 if __name__ == "__main__":
     # Nur für lokale Tests - im Container läuft gunicorn (siehe Dockerfile)
-    app.run(host="0.0.0.0", port=int(os.environ.get("WEB_PORT", "8080")), threaded=True)
+    from werkzeug.serving import make_server
+
+    host = os.environ.get("WEB_HOST", "127.0.0.1")
+    cnl_server = make_server(host, CNL_PORT, app, threaded=True)
+    threading.Thread(target=cnl_server.serve_forever, daemon=True).start()
+    log.info("Click'n'Load lauscht auf http://%s:%d", host, CNL_PORT)
+    app.run(host=host, port=int(os.environ.get("WEB_PORT", "8080")), threaded=True)
