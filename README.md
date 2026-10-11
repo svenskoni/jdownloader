@@ -19,7 +19,7 @@ Portainer-Stack aus drei Teilen:
 - **Click'n'Load** von Download-Seiten annehmen (siehe [Click'n'Load](#clicknload))
 - Anmeldeseite mit **„Angemeldet bleiben“** (Cookie, Standard 365 Tage)
 
-Über das Formular hinzugefügte Links und Container landen zuerst im Linkgrabber von JDownloader. Die WebUI übernimmt sie automatisch in die Download-Liste, sobald JD sie fertig geprüft hat, mit der im Formular gewählten Kategorie. Bei „Sofort starten“ wird der Download auch gleich gestartet. Was im Linkgrabber wartet (z. B. per Click'n'Load), zeigt die Karte **Linkgrabber**.
+Über das Formular hinzugefügte Links und Container landen zuerst im Linkgrabber von JDownloader. Die WebUI übernimmt sie automatisch in die Download-Liste, sobald JD sie fertig geprüft hat, mit der im Formular gewählten Kategorie (ohne Kategorie nach `Fertig`). Bei „Sofort starten“ wird der Download auch gleich gestartet. Was im Linkgrabber wartet (z. B. per Click'n'Load), zeigt die Karte **Linkgrabber**.
 
 **Pro Paket:** ▶ startet genau dieses Paket sofort („Erzwungener Start“ in JD), auch wenn der Rest gestoppt ist. ⏸ hält es an: JD kennt kein Pausieren einzelner Pakete, das Paket wird deshalb **deaktiviert** (Anzeige „Angehalten“). Bereits geladene Teile bleiben liegen, ▶ setzt es fort, sofern der Hoster Fortsetzen unterstützt.
 
@@ -60,6 +60,7 @@ Die JD-Konfiguration unter `/opt/jdownloader/config` bleibt erhalten.
 | `CNL_ACTION` | optional, was mit per Click'n'Load geschickten Paketen passiert: `grabber` = bleiben im Linkgrabber (Standard), `queue` = kommen in die Download-Liste, `start` = kommen in die Download-Liste und starten |
 | `SESSION_DAYS` | optional, so viele Tage bleibt ein Browser nach „Angemeldet bleiben“ angemeldet, Standard `365` |
 | `CATEGORIES` | optional, eigene Kategorien, siehe [Kategorien](#6-kategorien) |
+| `FALLBACK_DIR` | optional, wohin Pakete ohne Kategorie gehen, Standard `/fertig` (= `Fertig` auf der HDD) |
 
 Danach auf **Deploy the stack** klicken. Beim ersten Mal baut Portainer das WebUI-Image, das dauert etwa eine Minute.
 
@@ -78,21 +79,23 @@ Die Downloads liegen auf der Daten-HDD des Docker-Hosts, die dort unter `/mnt/da
 
 | Auf dem Host | Im Container | Zweck |
 |---|---|---|
-| `/mnt/data_disk/Download` | `/output` | Download-Ordner für alles ohne Kategorie (Standard von JD in diesem Image) |
-| `/mnt/data_disk/Fertig` | `/fertig` | optionaler Ablageordner |
+| `/mnt/data_disk/Download` | `/output` | Standard-Ordner von JD, nur für Pakete, die nicht über die WebUI übernommen werden |
+| `/mnt/data_disk/Fertig` | `/fertig` | Pakete ohne Kategorie, je Paket ein Unterordner (`FALLBACK_DIR`) |
 | `/mnt/data_disk/Medien` | `/medien` | Kategorien Anime, Filme, Serien (`/medien/Anime` …) |
 | `/mnt/data_disk/Spiele` | `/spiele` | Kategorie Spiele |
 
 Einmalig in der JD-GUI (Port 5800) prüfen:
 - *Einstellungen → Allgemein*: Download-Ordner `/output`.
-- *Einstellungen → Archiv-Entpacker*: **„Entpacken nach“ ausschalten**, also im Ordner des Archivs entpacken. Sonst landet alles Entpackte in einem festen Ordner statt in der Kategorie. Dazu „Archive nach erfolgreichem Entpacken löschen“ einschalten, dann bleiben in den Medien-Ordnern nur die fertigen Dateien.
+- *Einstellungen → Archiv-Entpacker*: **„Entpacken nach“ ausschalten**, also im Ordner des Archivs entpacken. Sonst landet alles Entpackte in einem festen Ordner statt in der Kategorie. Pakete ohne Kategorie landen trotzdem in `Fertig`, weil die WebUI sie dorthin lädt. Dazu „Archive nach erfolgreichem Entpacken löschen“ einschalten, dann bleiben in den Medien-Ordnern nur die fertigen Dateien.
 
 Der JD-Container schreibt als UID 1000. Die Ordner `Medien/*` und `Spiele` müssen für diesen Benutzer beschreibbar sein (`ls -ln /mnt/data_disk /mnt/data_disk/Medien` zeigt Besitzer und Rechte).
 
 Die HDD muss eingehängt sein, bevor der Stack startet. Fehlt sie, legt Docker die Ordner leer auf der Systemplatte an und JD lädt dorthin.
 
 ### 6. Kategorien
-Im Linkgrabber hat jedes Paket Knöpfe für die Kategorien. Ein Klick setzt den Download-Ordner des Pakets auf den Ordner der Kategorie plus einen Unterordner mit dem Paketnamen, z. B. `/medien/Anime/<Paket>` (= `/mnt/data_disk/Medien/Anime/<Paket>` auf dem Host). Mit **„Ordner ändern“** lässt sich der Unterordner anpassen, auch verschachtelt wie `Serie/Staffel 1`, oder leeren (dann direkt in `/medien/Serien`). Danach **Übernehmen**, mit „danach starten“ startet der Download auch gleich. Pakete ohne Kategorie gehen nach `/output`.
+Im Linkgrabber hat jedes Paket Knöpfe für die Kategorien. Ein Klick wählt die Kategorie und öffnet darunter das Feld für den **Ordnernamen**, vorbelegt mit dem Paketnamen und markiert, sodass du direkt lostippen kannst. Enter oder Klick daneben speichert, „Übernehmen“ nimmt den eingetippten Namen auch ohne Enter mit. Ergebnis z. B. `/medien/Anime/<Name>` (= `/mnt/data_disk/Medien/Anime/<Name>` auf dem Host). Verschachtelt geht auch (`Frieren/Staffel 1`). Ein leeres Feld bedeutet den Paketnamen, lose Dateien direkt im Kategorie-Ordner gibt es nicht. Nochmal auf die aktive Kategorie klicken wählt sie wieder ab.
+
+**Ohne Kategorie** einfach „Übernehmen“: Das Paket geht nach `/fertig/<Paket>` (`FALLBACK_DIR`), von dort sortierst du es selbst. Das gilt auch für „Alle übernehmen“ (Pakete mit Kategorie behalten ihren Ordner) und für das Formular ohne Kategorie. Mit „danach starten“ startet der Download gleich.
 
 Im Formular „Hinzufügen“ gibt es dieselben Kategorien als Auswahl, die gilt dann für alles, was gerade hinzugefügt wird.
 
@@ -100,7 +103,7 @@ Die Kategorien kommen aus der Variable `CATEGORIES` (Format `Name=/ordner/im/jdo
 ```
 Anime=/medien/Anime;Filme=/medien/Filme;Serien=/medien/Serien;Spiele=/spiele
 ```
-Neue Hauptordner brauchen zusätzlich ein Volume beim Service `jdownloader`. Mit `CATEGORY_SUBFOLDER=false` legt die WebUI keinen Unterordner pro Paket an.
+Neue Hauptordner brauchen zusätzlich ein Volume beim Service `jdownloader`. `FALLBACK_DIR` leer setzen, wenn Pakete ohne Kategorie im Standard-Ordner von JD (`/output`) bleiben sollen.
 
 ### Updates
 Nach Änderungen im Repo: *Stack → Pull and redeploy*. Taucht die Änderung danach nicht auf, lösche unter *Images* das Image `jd-webui:local` und führe den Redeploy noch einmal aus.

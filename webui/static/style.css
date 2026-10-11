@@ -96,17 +96,6 @@ body {
 .btn.ghost { border-color: transparent; color: var(--muted); background: transparent; }
 .btn.ghost:hover:not(:disabled) { color: var(--text); border-color: var(--border); }
 .btn[hidden] { display: none; }
-.linkbtn {
-  font: inherit;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--accent);
-  cursor: pointer;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-.linkbtn[hidden] { display: none; }
 
 /* ── Badges ────────────────────────────────────────────────── */
 .badge {
@@ -283,8 +272,11 @@ select[hidden] { display: none; }
 }
 .chip:hover { border-color: var(--accent); }
 .chip.active { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
-.target { color: var(--muted); overflow-wrap: anywhere; display: flex; flex-wrap: wrap; gap: 4px 10px; }
-.target-path:empty { display: none; }
+.folder-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.folder-row[hidden], .target[hidden] { display: none; }
+.folder-base { color: var(--muted); font-size: 13px; white-space: nowrap; font-family: ui-monospace, Menlo, Consolas, monospace; }
+.folder-row input { flex: 1; padding: 5px 8px; font-size: 14px; font-family: ui-monospace, Menlo, Consolas, monospace; }
+.target { color: var(--muted); overflow-wrap: anywhere; }
 
 /* ── Anmeldung ─────────────────────────────────────────────── */
 .login-body { min-height: 100vh; display: grid; place-items: center; padding: 16px; }

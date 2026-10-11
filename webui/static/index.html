@@ -44,7 +44,7 @@
           <button id="btnConfirmAll" class="btn sm" type="button">Alle übernehmen</button>
         </div>
       </div>
-      <p class="hint muted small">Kategorie wählen, dann übernehmen – die Dateien landen direkt im passenden Ordner. Ohne Kategorie: Download-Ordner.</p>
+      <p id="grabHint" class="hint muted small"></p>
       <div id="grabList" class="packages"></div>
     </section>
 
@@ -53,7 +53,7 @@
       <form id="addForm" autocomplete="off">
         <textarea id="urls" rows="3" placeholder="URL einfügen (mehrere: eine pro Zeile)"></textarea>
         <div class="add-row">
-          <input id="pkgName" type="text" placeholder="Paketname (optional)">
+          <input id="pkgName" type="text" placeholder="Paketname (optional, wird Ordnername)">
           <input id="pwd" type="text" placeholder="Archiv-Passwort (optional)">
         </div>
         <div class="add-row">

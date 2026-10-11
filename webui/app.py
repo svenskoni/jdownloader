@@ -41,8 +41,8 @@ SESSION_COOKIE = "jdwebui_session"
 # Kategorien im Linkgrabber: Name=Ordner im JDownloader-Container (siehe Volumes im Stack)
 CATEGORIES_SPEC = os.environ.get(
     "CATEGORIES", "Anime=/medien/Anime;Filme=/medien/Filme;Serien=/medien/Serien;Spiele=/spiele")
-# Pro Paket ein Unterordner mit dem Paketnamen, z. B. /medien/Serien/<Paket>
-CATEGORY_SUBFOLDER = os.environ.get("CATEGORY_SUBFOLDER", "true").strip().lower() not in ("0", "false", "no", "off")
+# Ohne Kategorie übernommene Pakete landen hier (mit Unterordner pro Paket), leer = JD-Standardordner
+FALLBACK_DIR = os.environ.get("FALLBACK_DIR", "/fertig").strip().rstrip("/")
 
 # Click'n'Load: Port im Container (gunicorn bindet ihn, siehe Dockerfile)
 CNL_PORT = int(os.environ.get("CNL_PORT", "9666"))
@@ -97,6 +97,10 @@ def _parse_categories(spec):
 
 CATEGORIES = _parse_categories(CATEGORIES_SPEC)
 CATEGORY_LIST = [{"name": k, "path": v} for k, v in CATEGORIES.items()]
+if FALLBACK_DIR and not FALLBACK_DIR.startswith("/"):
+    log.warning("FALLBACK_DIR=%r ignoriert (muss mit / beginnen)", FALLBACK_DIR)
+    FALLBACK_DIR = ""
+log.info("Ohne Kategorie: %s", f"{FALLBACK_DIR}/<Paket>" if FALLBACK_DIR else "JD-Standardordner")
 log.info("Kategorien: %s", ", ".join(f"{k} -> {v}" for k, v in CATEGORIES.items()) or "keine")
 
 CNL_PATHS = {"/jdcheck.js", "/crossdomain.xml", "/flash", "/flash/",
@@ -264,29 +268,49 @@ def _folder_path(text):
     return "/".join(p for p in parts if p)
 
 
-def _category_dir(category, package_name, folder=None):
-    base = CATEGORIES[category]
-    if folder is not None:
-        sub = _folder_path(folder)
-    else:
-        sub = _folder_name(package_name) if CATEGORY_SUBFOLDER else ""
-    return f"{base}/{sub}" if sub else base
-
-
-def _apply_category(category, pkgs):
-    """Setzt für Linkgrabber-Pakete den Ordner der Kategorie. Liefert Fehlertext oder None."""
-    for g in pkgs:
-        r = jdapi.grabber_set_directory(_category_dir(category, g.get("name")), [g.get("uuid")])
-        if not r["ok"]:
-            return r["error"]
-    return None
+def _under(path, base):
+    p = (path or "").rstrip("/")
+    return p == base or p.startswith(base + "/")
 
 
 def _category_of(save_to):
-    st = (save_to or "").rstrip("/")
     for name, path in sorted(CATEGORIES.items(), key=lambda kv: -len(kv[1])):
-        if st == path or st.startswith(path + "/"):
+        if _under(save_to, path):
             return name
+    return None
+
+
+def _category_dir(category, package_name, folder=None):
+    """Ordner der Kategorie + Unterordner. Immer mit Unterordner: ohne eigenen Namen
+    der Paketname, damit nichts lose im Kategorie-Ordner landet."""
+    base = CATEGORIES[category]
+    sub = _folder_path(folder) or _folder_name(package_name)
+    return f"{base}/{sub}" if sub else base
+
+
+def _fallback_dir(package_name):
+    sub = _folder_name(package_name)
+    return f"{FALLBACK_DIR}/{sub}" if sub else FALLBACK_DIR
+
+
+def _unsorted(save_to):
+    """Weder Kategorie noch schon im Ordner für Pakete ohne Kategorie."""
+    return _category_of(save_to) is None and not (FALLBACK_DIR and _under(save_to, FALLBACK_DIR))
+
+
+def _apply_dirs(pkgs, category=None):
+    """Ordner vor der Übernahme setzen: mit Kategorie deren Ordner, sonst bekommen
+    unsortierte Pakete den Ordner für "ohne Kategorie". Liefert Fehlertext oder None."""
+    for g in pkgs:
+        if category:
+            target = _category_dir(category, g.get("name"))
+        elif FALLBACK_DIR and _unsorted(g.get("saveTo")):
+            target = _fallback_dir(g.get("name"))
+        else:
+            continue
+        r = jdapi.grabber_set_directory(target, [g.get("uuid")])
+        if not r["ok"]:
+            return r["error"]
     return None
 
 
@@ -355,8 +379,18 @@ def _grabber_view(g):
         "unknown": (g.get("unknownCount") or 0) + (g.get("tempUnknownCount") or 0),
         "hosts": g.get("hosts") or [],
         "saveTo": g.get("saveTo") or "",
-        "category": _category_of(g.get("saveTo")),
+        **_grabber_target(g),
     }
+
+
+def _grabber_target(g):
+    """Kategorie, Unterordner (fürs Eingabefeld) und wohin das Paket bei Übernahme geht."""
+    st, name = (g.get("saveTo") or "").rstrip("/"), g.get("name")
+    cat = _category_of(st)
+    if cat:
+        return {"category": cat, "folder": st[len(CATEGORIES[cat]) + 1:], "target": st}
+    target = _fallback_dir(name) if FALLBACK_DIR and _unsorted(st) else st
+    return {"category": None, "folder": _folder_name(name), "target": target}
 
 
 def _activity(state, links, queue, packages):
@@ -407,7 +441,7 @@ def build_overview():
 
     if not res["state"]["ok"]:
         return {"ok": True, "connected": False, "error": res["state"]["error"],
-                "notices": notices, "cnl": cnl_info, "categories": CATEGORY_LIST,
+                "notices": notices, "cnl": cnl_info, "categories": CATEGORY_LIST, "fallbackDir": FALLBACK_DIR,
                 "auth": bool(WEBUI_USER)}
 
     state = str(res["state"]["data"] or "").upper()
@@ -438,7 +472,7 @@ def build_overview():
         "grabber": {"packages": len(grabber),
                     "links": sum(g.get("childCount") or 0 for g in grabber),
                     "list": [_grabber_view(g) for g in grabber]},
-        "categories": CATEGORY_LIST,
+        "categories": CATEGORY_LIST, "fallbackDir": FALLBACK_DIR,
         "auth": bool(WEBUI_USER),
         "warning": errors[0] if errors else None,
         "notices": notices,
@@ -544,10 +578,9 @@ def _confirm_worker():
         fresh = set(pkgs) - before - moved
         if fresh and collecting is not True:
             r = {"ok": True}
-            if category:
-                err = _apply_category(category, [pkgs[u] for u in fresh])
-                if err:
-                    r = {"ok": False, "error": err}
+            err = _apply_dirs([pkgs[u] for u in fresh], category)
+            if err:
+                r = {"ok": False, "error": err}
             if r["ok"]:
                 r = jdapi.grabber_to_downloads(fresh)
             if not r["ok"]:
@@ -660,10 +693,15 @@ def too_large(_e):
 @app.post("/api/linkgrabber/confirm_all")
 def confirm_all():
     data = request.get_json(silent=True) or {}
-    uuids = _grabber_uuids()
-    if not uuids:
+    pkgs = _grabber_map()
+    if not pkgs:
         return fail("Im Linkgrabber wartet nichts.")
-    r = jdapi.grabber_to_downloads(uuids)
+    # Pakete mit Kategorie behalten ihren Ordner, der Rest geht nach FALLBACK_DIR
+    err = _apply_dirs(pkgs.values())
+    if err:
+        invalidate()
+        return fail(err)
+    r = jdapi.grabber_to_downloads(set(pkgs))
     if r["ok"] and data.get("autostart"):
         jdapi.start()
     invalidate()
@@ -677,26 +715,39 @@ def _package_id(data):
         return None
 
 
+def _set_grabber_dir(pkg, data):
+    """Ordner eines Linkgrabber-Pakets nach Kategorie (+ Unterordner) setzen.
+    Kategorie leer/None = ohne Kategorie (FALLBACK_DIR). Liefert (Ziel, Fehlerantwort)."""
+    category = data.get("category") or None
+    if category is not None and category not in CATEGORIES:
+        return None, fail("Unbekannte Kategorie.", 400)
+    if category:
+        target = _category_dir(category, pkg.get("name"), str(data.get("folder") or ""))
+    elif FALLBACK_DIR:
+        target = _fallback_dir(pkg.get("name"))
+    else:
+        return pkg.get("saveTo"), None   # JD-Standardordner lassen
+    r = jdapi.grabber_set_directory(target, [pkg.get("uuid")])
+    if not r["ok"]:
+        return None, jsonify(r)
+    log.info("Linkgrabber: %s -> %s", pkg.get("name"), target)
+    return target, None
+
+
 @app.post("/api/linkgrabber/category")
 def grabber_category():
     data = request.get_json(silent=True) or {}
-    pid, category = _package_id(data), data.get("category")
+    pid = _package_id(data)
     if pid is None:
         return fail("Ungültige Paket-ID.", 400)
-    if category not in CATEGORIES:
-        return fail("Unbekannte Kategorie.", 400)
     pkg = _grabber_map().get(pid)
     if not pkg:
         return fail("Das Paket ist nicht mehr im Linkgrabber.")
-    # Optional eigener Unterordner (z. B. "Serie/Staffel 1"), sonst der Paketname
-    folder = data.get("folder")
-    target = _category_dir(category, pkg.get("name"), None if folder is None else str(folder))
-    r = jdapi.grabber_set_directory(target, [pid])
+    target, err = _set_grabber_dir(pkg, data)
     invalidate()
-    if not r["ok"]:
-        return jsonify(r)
-    log.info("Linkgrabber: %s -> %s", pkg.get("name"), target)
-    return jsonify({"ok": True, "message": f"{category}: {target}", "saveTo": target})
+    if err:
+        return err
+    return jsonify({"ok": True, "saveTo": target})
 
 
 @app.post("/api/linkgrabber/confirm")
@@ -705,6 +756,21 @@ def grabber_confirm():
     pid = _package_id(data)
     if pid is None:
         return fail("Ungültige Paket-ID.", 400)
+    pkg = _grabber_map().get(pid)
+    if not pkg:
+        return fail("Das Paket ist nicht mehr im Linkgrabber.")
+    # Mit "category" im Request zählt die Auswahl der Oberfläche (inkl. Ordnername),
+    # sonst bekommt ein unsortiertes Paket den Ordner für "ohne Kategorie"
+    if "category" in data:
+        _, err = _set_grabber_dir(pkg, data)
+        if err:
+            invalidate()
+            return err
+    else:
+        e = _apply_dirs([pkg])
+        if e:
+            invalidate()
+            return fail(e)
     r = jdapi.grabber_to_downloads([pid])
     if r["ok"] and data.get("autostart"):
         jdapi.start()

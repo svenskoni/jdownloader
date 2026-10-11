@@ -212,11 +212,20 @@ function renderPackages(d) {
 }
 
 // ── Linkgrabber ──────────────────────────────────────────────────────────────
+// Pro Paket: Kategorie-Chips + Feld für den Ordnernamen (vorbelegt mit dem Paketnamen).
+// Ohne Kategorie geht das Paket bei Übernahme in den Ordner "ohne Kategorie" (fallbackDir).
 const grabRows = new Map();      // uuid -> Element
 let grabOrder = "";
 let categories = [];             // [{name, path}]
+let fallbackDir = "";
+
+const catPath = (name) => (categories.find((c) => c.name === name) || {}).path || "";
 
 function renderCategories(d) {
+  fallbackDir = d.fallbackDir || "";
+  setText($("#grabHint"), fallbackDir
+    ? `Kategorie wählen, Ordnernamen prüfen, übernehmen. Ohne Kategorie landet das Paket in ${fallbackDir}/<Paket>.`
+    : "Kategorie wählen, Ordnernamen prüfen, übernehmen. Ohne Kategorie: Download-Ordner von JD.");
   const list = d.categories || [];
   if (JSON.stringify(list) === JSON.stringify(categories)) return;
   categories = list;
@@ -242,8 +251,14 @@ function createGrabRow(uuid) {
     </div>
     <div class="pkg-meta"></div>
     <div class="chips" role="group" aria-label="Kategorie"></div>
-    <div class="target small"><span class="target-path"></span>
-      <button class="linkbtn act-folder" type="button" hidden>Ordner ändern</button></div>`;
+    <label class="folder-row" hidden>
+      <span class="folder-base"></span>
+      <input class="folder-input" type="text" spellcheck="false" autocomplete="off" aria-label="Ordnername">
+    </label>
+    <div class="target small"></div>`;
+  el._cat = null;          // gewählte Kategorie (Oberfläche)
+  el._dirty = false;       // Ordnername geändert, noch nicht gespeichert
+  el._save = null;         // laufendes Speichern (Promise)
   const chips = el.querySelector(".chips");
   for (const c of categories) {
     const b = document.createElement("button");
@@ -251,21 +266,36 @@ function createGrabRow(uuid) {
     b.className = "chip";
     b.dataset.cat = c.name;
     b.textContent = c.name;
-    b.title = `Ordner: ${c.path}`;
-    b.addEventListener("click", () => setCategory(uuid, c.name, el));
+    b.title = `Ordner: ${c.path}/…`;
+    b.addEventListener("click", () => pickCategory(uuid, el, c.name));
     chips.append(b);
   }
   chips.hidden = !categories.length;
-  el.querySelector(".act-confirm").addEventListener("click", (e) => confirmGrab(uuid, e.currentTarget));
+  const input = el.querySelector(".folder-input");
+  input.addEventListener("input", () => { el._dirty = true; });
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); input.blur(); } });
+  input.addEventListener("change", () => { if (el._dirty) saveGrab(uuid, el); });
+  el.querySelector(".act-confirm").addEventListener("click", (e) => confirmGrab(uuid, el, e.currentTarget));
   el.querySelector(".act-remove").addEventListener("click", () =>
     removeGrab(uuid, el.querySelector(".pkg-name").textContent));
-  el.querySelector(".act-folder").addEventListener("click", () => changeFolder(uuid, el));
   return el;
 }
 
+function paintGrabRow(el) {
+  for (const b of el.querySelectorAll(".chip")) {
+    const on = b.dataset.cat === el._cat;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-pressed", on ? "true" : "false");
+  }
+  const row = el.querySelector(".folder-row");
+  row.hidden = !el._cat;
+  setText(el.querySelector(".folder-base"), el._cat ? `${catPath(el._cat)}/` : "");
+  const t = el.querySelector(".target");
+  t.hidden = !!el._cat;
+  setText(t, `Ohne Kategorie → ${el._target || "Download-Ordner"}`);
+}
+
 function updateGrabRow(el, g) {
-  el.dataset.category = g.category || "";
-  el.dataset.saveTo = g.saveTo || "";
   setText(el.querySelector(".pkg-name"), g.name);
   el.querySelector(".pkg-name").title = g.name;
   const meta = [`${g.links} Link${g.links !== 1 ? "s" : ""}`];
@@ -274,13 +304,16 @@ function updateGrabRow(el, g) {
   if (g.unknown) meta.push(`${g.unknown} ungeprüft`);
   if (g.hosts.length) meta.push(g.hosts.slice(0, 3).join(", ") + (g.hosts.length > 3 ? " …" : ""));
   setText(el.querySelector(".pkg-meta"), meta.join(" · "));
-  for (const b of el.querySelectorAll(".chip")) {
-    const on = b.dataset.cat === g.category;
-    b.classList.toggle("active", on);
-    b.setAttribute("aria-pressed", on ? "true" : "false");
+  el._name = g.name;
+  // Während gespeichert wird oder getippt wird, gilt der Stand der Oberfläche
+  const input = el.querySelector(".folder-input");
+  if (!el._save && !el._dirty && document.activeElement !== input) {
+    el._cat = g.category;
+    el._target = g.target;
+    input.value = g.folder;
   }
-  setText(el.querySelector(".target-path"), g.saveTo ? `Ziel: ${g.saveTo}` : "");
-  el.querySelector(".act-folder").hidden = !g.category;
+  input.placeholder = g.name;
+  paintGrabRow(el);
 }
 
 function renderGrabber(d) {
@@ -413,31 +446,52 @@ const store = {
 $("#grabStart").checked = store.get("jdwebui.grabStart", "1") === "1";
 $("#grabStart").addEventListener("change", () => store.set("jdwebui.grabStart", $("#grabStart").checked ? "1" : "0"));
 
-async function setCategory(uuid, category, el, folder) {
-  for (const b of el.querySelectorAll(".chip")) b.classList.toggle("active", b.dataset.cat === category);
-  const body = { packageId: uuid, category };
-  if (folder !== undefined) body.folder = folder;
-  const r = await post("api/linkgrabber/category", body);
-  if (r.ok) setText(el.querySelector(".target-path"), `Ziel: ${r.saveTo}`);
-  else toast(r.error, "err");
-  refreshSoon();
+// Kategorie umschalten: nochmal auf die aktive Kategorie = keine Kategorie
+function pickCategory(uuid, el, name) {
+  el._cat = el._cat === name ? null : name;
+  paintGrabRow(el);
+  if (el._cat) {
+    const input = el.querySelector(".folder-input");
+    if (!input.value.trim()) input.value = el._name || "";
+    input.focus();
+    input.select();
+  }
+  saveGrab(uuid, el);
 }
 
-function changeFolder(uuid, el) {
-  const cat = el.dataset.category;
-  if (!cat) return;
-  const base = (categories.find((c) => c.name === cat) || {}).path || "";
-  const path = el.dataset.saveTo || "";
-  const sub = base && path.startsWith(base + "/") ? path.slice(base.length + 1) : "";
-  const v = prompt(`Unterordner in ${base}\n(leer = direkt dort, mit „/“ verschachtelt, z. B. „Serie/Staffel 1“)`, sub);
-  if (v === null) return;
-  setCategory(uuid, cat, el, v.trim());
+function saveGrab(uuid, el) {
+  const input = el.querySelector(".folder-input");
+  const body = { packageId: uuid, category: el._cat };
+  if (el._cat) body.folder = input.value.trim();
+  el._dirty = false;
+  // Pro Paket nacheinander speichern, damit die letzte Auswahl gewinnt
+  const p = (el._save || Promise.resolve()).then(async () => {
+    const r = await post("api/linkgrabber/category", body);
+    if (!r.ok) { toast(r.error, "err"); return; }
+    el._target = r.saveTo;
+    // Bereinigten Namen zeigen, außer es wird gerade weiter getippt
+    if (el._cat === body.category && el._cat && !el._dirty && document.activeElement !== input) {
+      input.value = r.saveTo.slice(catPath(el._cat).length + 1);
+    }
+  }).finally(() => {
+    if (el._save === p) el._save = null;
+    refreshSoon();
+  });
+  el._save = p;
+  return p;
 }
 
-async function confirmGrab(uuid, btn) {
+async function flushGrab(el) {
+  while (el._save) await el._save;
+}
+
+async function confirmGrab(uuid, el, btn) {
   btn.disabled = true;
+  await flushGrab(el);
   const start = $("#grabStart").checked;
-  const r = await post("api/linkgrabber/confirm", { packageId: uuid, autostart: start });
+  const body = { packageId: uuid, autostart: start, category: el._cat };
+  if (el._cat) body.folder = el.querySelector(".folder-input").value.trim();
+  const r = await post("api/linkgrabber/confirm", body);
   btn.disabled = false;
   toast(r.ok ? (start ? "Übernommen und gestartet" : "In die Downloads übernommen") : r.error, r.ok ? "ok" : "err");
   refreshSoon();
@@ -451,8 +505,14 @@ async function removeGrab(uuid, name) {
 }
 
 $("#btnConfirmAll").addEventListener("click", async () => {
+  const btn = $("#btnConfirmAll");
+  btn.disabled = true;
+  // Offene Änderungen an Ordnernamen erst speichern
+  for (const [uuid, el] of grabRows) if (el._dirty) saveGrab(uuid, el);
+  for (const el of grabRows.values()) await flushGrab(el);
   const start = $("#grabStart").checked;
   const r = await post("api/linkgrabber/confirm_all", { autostart: start });
+  btn.disabled = false;
   toast(r.ok ? (start ? "Alle übernommen und gestartet" : "In die Downloads übernommen") : r.error, r.ok ? "ok" : "err");
   refreshSoon();
 });

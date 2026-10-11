@@ -37,8 +37,8 @@ services:
       - WEB_AUTHENTICATION_TOKEN_VALIDITY_TIME=8760   # JD-Oberfläche (5800): 1 Jahr angemeldet bleiben
     volumes:
       - /opt/jdownloader/config:/config:rw
-      - /mnt/data_disk/Download:/output:rw   # HDD: Downloads ohne Kategorie (JD-Standardordner /output)
-      - /mnt/data_disk/Fertig:/fertig:rw     # HDD: optionaler Ablageordner
+      - /mnt/data_disk/Download:/output:rw   # HDD: JD-Standardordner (nur was nicht über die WebUI übernommen wird)
+      - /mnt/data_disk/Fertig:/fertig:rw     # HDD: Pakete ohne Kategorie (FALLBACK_DIR)
       - /mnt/data_disk/Medien:/medien:rw     # HDD: Kategorien Anime/Filme/Serien (siehe CATEGORIES)
       - /mnt/data_disk/Spiele:/spiele:rw     # HDD: Kategorie Spiele
     networks:
@@ -67,6 +67,7 @@ services:
       - SESSION_DAYS=${SESSION_DAYS:-365}     # so lange bleibt der Browser nach dem Anmelden angemeldet
       # Kategorien im Linkgrabber: Name=Ordner im jdownloader-Container (Volumes oben)
       - CATEGORIES=${CATEGORIES:-Anime=/medien/Anime;Filme=/medien/Filme;Serien=/medien/Serien;Spiele=/spiele}
+      - FALLBACK_DIR=${FALLBACK_DIR-/fertig}   # Pakete ohne Kategorie: /fertig/<Paket> (leer = JD-Standardordner)
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
       interval: 30s
