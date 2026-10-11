@@ -21,18 +21,31 @@ const seen = new Set();   // requestIds, damit nichts doppelt geschickt wird
 async function applyRules() {
   const cfg = await loadConfig();
   const active = cfg.enabled && !!cfg.server;
+  const access = await hasSiteAccess();
   try {
     await chrome.declarativeNetRequest.updateEnabledRulesets(
       active ? { enableRulesetIds: [RULESET] } : { disableRulesetIds: [RULESET] });
   } catch (e) {
     console.error("[CNL] Regeln konnten nicht umgeschaltet werden:", e);
   }
-  await chrome.action.setBadgeBackgroundColor({ color: "#6b7280" });
-  await chrome.action.setBadgeText({ text: active ? "" : "AUS" });
+  let text = "", color = "#6b7280", title = "JD WebUI Click'n'Load";
+  if (!active) {
+    text = "AUS";
+    title += " (aus)";
+  } else if (!access) {
+    text = "!";
+    color = "#dc2626";
+    title += ": Website-Zugriff fehlt, Popup öffnen";
+  }
+  await chrome.action.setBadgeBackgroundColor({ color });
+  await chrome.action.setBadgeText({ text });
+  await chrome.action.setTitle({ title });
 }
 
 chrome.runtime.onInstalled.addListener(applyRules);
 chrome.runtime.onStartup.addListener(applyRules);
+chrome.permissions.onAdded.addListener(applyRules);
+chrome.permissions.onRemoved.addListener(applyRules);
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "sync" && ("server" in changes || "enabled" in changes)) applyRules();
 });

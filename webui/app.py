@@ -7,7 +7,8 @@ Tätigkeit (Download/Entpacken) anzeigen. Basic Auth über WEBUI_USER/WEBUI_PASS
 
 Zusätzlich ein Click'n'Load-Empfänger auf eigenem Port (CNL_PORT, Standard 9666):
 dort gibt es nur die CNL-Endpunkte, ohne Login (Download-Seiten können sich nicht
-anmelden), optional beschränkt auf CNL_ALLOWED.
+anmelden), optional beschränkt auf CNL_ALLOWED. CNL_ACTION legt fest, ob die Pakete
+im Linkgrabber bleiben, übernommen oder auch gestartet werden.
 """
 
 import base64
@@ -33,7 +34,13 @@ CONFIRM_TIMEOUT = float(os.environ.get("CONFIRM_TIMEOUT", "90"))
 
 # Click'n'Load: Port im Container (gunicorn bindet ihn, siehe Dockerfile)
 CNL_PORT = int(os.environ.get("CNL_PORT", "9666"))
-CNL_AUTOSTART = os.environ.get("CNL_AUTOSTART", "true").strip().lower() not in ("0", "false", "no", "off")
+# Was nach Click'n'Load mit den Paketen passiert:
+#   grabber = im Linkgrabber lassen (in JD prüfen, Ordner wählen, selbst starten)
+#   queue   = in die Download-Liste übernehmen, aber nicht starten
+#   start   = übernehmen und Downloads starten
+CNL_ACTIONS = {"grabber": "bleiben im Linkgrabber", "queue": "kommen in die Download-Liste",
+               "start": "kommen in die Download-Liste und starten"}
+CNL_ACTION = os.environ.get("CNL_ACTION", "grabber").strip().lower()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("jd-webui")
@@ -57,6 +64,11 @@ if CNL_ALLOWED == []:
     log.warning("CNL_ALLOWED ist leer - Click'n'Load (Port %d) nimmt Links von JEDER Adresse an.", CNL_PORT)
 elif CNL_ALLOWED:
     log.info("Click'n'Load erlaubt für: %s", ", ".join(str(n) for n in CNL_ALLOWED))
+
+if CNL_ACTION not in CNL_ACTIONS:
+    log.warning("CNL_ACTION=%r unbekannt (grabber, queue, start) - nehme grabber.", CNL_ACTION)
+    CNL_ACTION = "grabber"
+log.info("Click'n'Load: Pakete %s (CNL_ACTION=%s)", CNL_ACTIONS[CNL_ACTION], CNL_ACTION)
 
 CNL_PATHS = {"/jdcheck.js", "/crossdomain.xml", "/flash", "/flash/",
              "/flash/add", "/flash/addcrypted", "/flash/addcrypted2"}
@@ -511,18 +523,31 @@ def _cnl_failed(label, msg, links=0):
     return _cnl_text(f"failed {msg}\r\n")
 
 
+def _cnl_before():
+    # Linkgrabber-Stand vor dem Hinzufügen - nur nötig, wenn danach übernommen wird
+    return _grabber_uuids() if CNL_ACTION != "grabber" else set()
+
+
+def _cnl_followup(before, label, what):
+    if CNL_ACTION == "grabber":
+        notice("ok", f"{label}: {what} im Linkgrabber")
+    else:
+        _queue_confirm(before, CNL_ACTION == "start", label)
+    invalidate()
+
+
 def _cnl_add_links(label, text):
     links = cnl.count_links(text)
     package = (request.values.get("package") or "").strip()
     password = cnl.first_password(request.values.get("passwords"))
-    before = _grabber_uuids()
+    before = _cnl_before()
     r = jdapi.add_links(text, package, autostart=False, extract_password=password)
     if not r["ok"]:
         return _cnl_failed(label, r["error"], links)
     log.info("Click'n'Load von %s (%s): %d Link(s) an JD übergeben", label, request.remote_addr, links)
     _cnl_record(label, links, True)
-    _queue_confirm(before, CNL_AUTOSTART, f"Click'n'Load ({package or label})")
-    invalidate()
+    _cnl_followup(before, f"Click'n'Load ({package or label})",
+                  f"{links} Link{'s' if links != 1 else ''}")
     return _cnl_text("success\r\n")
 
 
@@ -579,14 +604,13 @@ def cnl_addcrypted():
     content = (request.values.get("crypted") or "").strip()
     if not content:
         return _cnl_failed(label, "keine Daten übermittelt (crypted fehlt)")
-    before = _grabber_uuids()
+    before = _cnl_before()
     r = jdapi.add_container("DLC", base64.b64encode(content.encode()).decode("ascii"))
     if not r["ok"]:
         return _cnl_failed(label, r["error"])
     log.info("Click'n'Load (DLC) von %s (%s) an JD übergeben", label, request.remote_addr)
     _cnl_record(label, 0, True, "DLC")
-    _queue_confirm(before, CNL_AUTOSTART, f"Click'n'Load ({label})")
-    invalidate()
+    _cnl_followup(before, f"Click'n'Load ({label})", "DLC")
     return _cnl_text("success\r\n")
 
 

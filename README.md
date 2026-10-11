@@ -53,7 +53,7 @@ Die JD-Konfiguration unter `/opt/jdownloader/config` bleibt erhalten.
 | `WEBUI_PORT` | optional, Standard `8080` |
 | `CNL_ALLOWED` | empfohlen: IP-Adresse(n) oder Netze, die Click'n'Load schicken dürfen, z. B. `10.200.0.10` oder `10.200.0.10, 192.168.1.0/24`. Leer = jede Adresse |
 | `CNL_PORT` | optional, Port für Click'n'Load auf dem Server, Standard `9666` |
-| `CNL_AUTOSTART` | optional, `false` = per Click'n'Load übernommene Pakete nicht sofort starten. Standard `true` |
+| `CNL_ACTION` | optional, was mit per Click'n'Load geschickten Paketen passiert: `grabber` = bleiben im Linkgrabber (Standard), `queue` = kommen in die Download-Liste, `start` = kommen in die Download-Liste und starten |
 
 Danach auf **Deploy the stack** klicken. Beim ersten Mal baut Portainer das WebUI-Image, das dauert etwa eine Minute.
 
@@ -86,7 +86,7 @@ Nach Änderungen im Repo: *Stack → Pull and redeploy*. Taucht die Änderung da
 
 ## Click'n'Load
 
-Download-Seiten schicken die Links beim Klick auf den Click'n'Load-Button an `http://127.0.0.1:9666`, also an einen JDownloader **auf dem eigenen PC**. Damit sie beim Server ankommen, braucht der Browser-PC eine Brücke dorthin. Die WebUI nimmt die Daten auf Port 9666 an, entschlüsselt die Links und übergibt sie an JDownloader. Mit `CNL_AUTOSTART=true` werden sie automatisch in die Download-Liste übernommen und gestartet. Alles bleibt im LAN, MyJDownloader wird nicht gebraucht.
+Download-Seiten schicken die Links beim Klick auf den Click'n'Load-Button an `http://127.0.0.1:9666`, also an einen JDownloader **auf dem eigenen PC**. Damit sie beim Server ankommen, braucht der Browser-PC eine Brücke dorthin. Die WebUI nimmt die Daten auf Port 9666 an, entschlüsselt die Links und übergibt sie an JDownloader. Standardmäßig landen sie im Linkgrabber von JDownloader, dort kannst du sie prüfen, den Ordner wählen und selbst starten. Die WebUI zeigt wartende Pakete als Hinweis mit dem Button „Alle übernehmen“. Mit `CNL_ACTION=queue` bzw. `start` übernimmt die WebUI sie stattdessen automatisch in die Download-Liste bzw. startet sie auch. Alles bleibt im LAN, MyJDownloader wird nicht gebraucht.
 
 Auf dem Server ist dafür nur eines zu tun: In Portainer `CNL_ALLOWED` auf die IP(s) der PCs setzen, von denen Click'n'Load kommen darf, und den Stack neu deployen. Für die Brücke am PC gibt es zwei Wege.
 
@@ -96,7 +96,8 @@ Funktioniert in Chrome, Edge und Brave, auf jedem Gerät und ohne Änderungen an
 1. Repo auf den PC holen (GitHub: *Code → Download ZIP*, entpacken). Den Ordner danach **nicht löschen oder verschieben**, der Browser lädt die Erweiterung von dort.
 2. `chrome://extensions` öffnen (Edge: `edge://extensions`), **Entwicklermodus** einschalten, **Entpackte Erweiterung laden** und den Ordner `extension` auswählen.
 3. Erweiterung an die Symbolleiste anheften, Symbol anklicken, Adresse des Click'n'Load-Ports eintragen, z. B. `http://192.168.1.10:9666`, und **Speichern**. Erwartet: „Verbunden. WebUI und JDownloader erreichbar.“
-4. Auf einer Download-Seite den Click'n'Load-Button drücken. Es erscheint eine Benachrichtigung, und in der WebUI steht unter dem DLC-Feld „Click'n'Load zuletzt …“.
+4. Zeigt das Popup **„Website-Zugriff fehlt“** (am Symbol ein rotes „!“), auf **Zugriff erlauben** klicken. Ohne diesen Zugriff kommt nichts an. Brave und Chrome stellen ihn je nach Einstellung auf „Bei Klick“. Alternativ in den Details der Erweiterung bei „Websitezugriff“ **„Auf allen Websites“** wählen.
+5. Auf einer Download-Seite den Click'n'Load-Button drücken. Es erscheint eine Benachrichtigung, und in der WebUI steht unter dem DLC-Feld „Click'n'Load zuletzt …“.
 
 So funktioniert sie:
 ```
@@ -148,7 +149,7 @@ Passe bei `jd-init` die Zeile `user: "1000:1000"` an, sonst darf das Init-Skript
 Setze in Portainer die Variable `WEBUI_PORT`, z. B. auf `8090`.
 
 **Click'n'Load kommt nicht an**
-1. Mit der Erweiterung: Symbol anklicken, **Verbindung testen**. Die Meldung sagt, woran es hängt (nicht erreichbar, IP abgelehnt, falscher Port, JDownloader aus). Unter „Zuletzt“ steht das Ergebnis der letzten Übergabe.
+1. Mit der Erweiterung: Symbol anklicken, **Verbindung testen**. Die Meldung sagt, woran es hängt (nicht erreichbar, IP abgelehnt, falscher Port, JDownloader aus). Unter „Zuletzt“ steht das Ergebnis der letzten Übergabe. Steht dort „Noch nichts weitergeleitet“, obwohl die Seite Erfolg meldet, fehlt fast immer der Website-Zugriff (rotes „!“ am Symbol, siehe Einrichtung Schritt 4).
 2. Mit der Portweiterleitung: `http://127.0.0.1:9666/jdcheck.js` am PC aufrufen:
    - Seite lädt nicht: Weiterleitung (`netsh interface portproxy show v4tov4`) oder Firewall prüfen.
    - HTTP 403: Die WebUI sieht eine andere Absender-IP als in `CNL_ALLOWED`. Im Log von `jd-webui` steht „Click'n'Load von … abgelehnt“ mit der tatsächlichen IP.

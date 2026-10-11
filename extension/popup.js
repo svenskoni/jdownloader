@@ -41,7 +41,9 @@ async function testConnection(server) {
   }
   if (r.ok && text.includes("jdownloader=true")) {
     const v = (text.match(/version='(\d+)'/) || [])[1];
-    setStatus("ok", `Verbunden. WebUI und JDownloader erreichbar${v ? ` (Version ${v})` : ""}.`);
+    const msg = `Verbunden. WebUI und JDownloader erreichbar${v ? ` (Version ${v})` : ""}.`;
+    if (await hasSiteAccess()) setStatus("ok", msg);
+    else setStatus("warn", `${msg} Es fehlt aber noch der Website-Zugriff (siehe oben).`);
   } else if (r.status === 503 || text.includes("jdownloader=false")) {
     setStatus("warn", "WebUI erreichbar, aber JDownloader antwortet nicht.");
   } else if (r.status === 403) {
@@ -55,7 +57,27 @@ async function testConnection(server) {
   }
 }
 
+async function renderAccess() {
+  $("#access").hidden = await hasSiteAccess();
+}
+
+$("#grant").addEventListener("click", async () => {
+  let granted = false;
+  try {
+    granted = await chrome.permissions.request(CNL_SITE_ACCESS);
+  } catch {
+    granted = false;
+  }
+  await renderAccess();
+  if (granted) {
+    setStatus("ok", "Website-Zugriff erlaubt.");
+  } else {
+    setStatus("err", "Nicht erlaubt. Alternativ in den Details der Erweiterung bei „Websitezugriff“ „Auf allen Websites“ wählen.");
+  }
+});
+
 async function init() {
+  await renderAccess();
   const cfg = await chrome.storage.sync.get(CNL_DEFAULTS);
   $("#server").value = cfg.server || "";
   $("#enabled").checked = cfg.enabled !== false;

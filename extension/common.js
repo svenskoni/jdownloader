@@ -3,6 +3,19 @@
 const CNL_DEFAULTS = { server: "", enabled: true };
 const CNL_LOCAL_HOSTS = ["127.0.0.1", "localhost", "[::1]"];
 
+// Ohne Zugriff auf alle Websites (Einstellung "Bei Klick" o. ä.) lässt der Browser die
+// Erweiterung Anfragen, die eine Download-Seite an 127.0.0.1:9666 schickt, weder umleiten
+// noch mitlesen. Dann kommt nichts bei der WebUI an.
+const CNL_SITE_ACCESS = { origins: ["<all_urls>"] };
+
+async function hasSiteAccess() {
+  try {
+    return await chrome.permissions.contains(CNL_SITE_ACCESS);
+  } catch {
+    return false;
+  }
+}
+
 // "192.168.1.10:9666" -> "http://192.168.1.10:9666". Wirft Error mit Klartext bei Unsinn.
 function normalizeServer(input) {
   let s = String(input || "").trim();

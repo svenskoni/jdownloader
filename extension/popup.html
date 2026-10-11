@@ -8,6 +8,11 @@
 <body>
   <h1><img src="icons/32.png" alt="" width="20" height="20"> Click'n'Load → JD WebUI</h1>
 
+  <div id="access" class="warnbox" hidden>
+    <p><strong>Website-Zugriff fehlt.</strong> So kann die Erweiterung Click'n'Load nicht abfangen, es kommt nichts bei der WebUI an.</p>
+    <button id="grant" class="primary" type="button">Zugriff erlauben</button>
+  </div>
+
   <form id="form" autocomplete="off">
     <label for="server">Adresse des Click'n'Load-Ports der WebUI</label>
     <input id="server" type="text" placeholder="http://192.168.1.10:9666" spellcheck="false">
