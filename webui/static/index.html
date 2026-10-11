@@ -15,6 +15,9 @@
         <span id="stateBadge" class="badge s-unknown">…</span>
         <span id="speed" class="speed">–</span>
       </div>
+      <form id="logoutForm" class="logout" method="post" action="logout" hidden>
+        <button class="btn sm ghost" type="submit" title="Abmelden (dieser Browser)">Abmelden</button>
+      </form>
       <div class="controls">
         <button id="btnStart" class="btn primary" type="button">▶ Start</button>
         <button id="btnPause" class="btn" type="button">⏸ Halt</button>
@@ -33,10 +36,17 @@
       </div>
     </section>
 
-    <div id="grabberBanner" class="banner" hidden>
-      <span id="grabberTxt"></span>
-      <button id="btnConfirmAll" class="btn sm" type="button">Alle übernehmen</button>
-    </div>
+    <section id="grabberCard" class="card grabber" hidden>
+      <div class="list-head">
+        <h2>Linkgrabber <span id="grabCount" class="muted"></span></h2>
+        <div class="head-actions">
+          <label class="check small"><input id="grabStart" type="checkbox" checked> danach starten</label>
+          <button id="btnConfirmAll" class="btn sm" type="button">Alle übernehmen</button>
+        </div>
+      </div>
+      <p class="hint muted small">Kategorie wählen, dann übernehmen – die Dateien landen direkt im passenden Ordner. Ohne Kategorie: Download-Ordner.</p>
+      <div id="grabList" class="packages"></div>
+    </section>
 
     <section class="card">
       <h2>Hinzufügen</h2>
@@ -47,6 +57,7 @@
           <input id="pwd" type="text" placeholder="Archiv-Passwort (optional)">
         </div>
         <div class="add-row">
+          <select id="addCat" aria-label="Kategorie"><option value="">Kategorie: keine</option></select>
           <label class="check"><input id="autostart" type="checkbox" checked> Sofort starten</label>
           <button id="btnAdd" class="btn primary" type="submit">Hinzufügen</button>
         </div>

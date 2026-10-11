@@ -42,7 +42,8 @@ def mk_link(name, size, loaded=0, finished=False, extraction=None):
 
 def mk_package(name, links, extract=None, archive=None):
     return {"uuid": next(_ids), "name": name, "links": links, "enabled": True,
-            "extract": extract, "extractPct": 0.0, "archive": archive or name}
+            "extract": extract, "extractPct": 0.0, "archive": archive or name,
+            "saveTo": "/output", "forced": False}
 
 
 def seed():
@@ -75,20 +76,26 @@ def tick():
             grabber.append(item[1])
             pending.remove(item)
 
-    # Downloads
+    # Downloads (erzwungene Pakete laufen auch bei gestopptem Controller, ohne Slot-Limit)
     speed = DL_SPEED if state["controller"] == "RUNNING" else PAUSE_SPEED
     active = state["controller"] in ("RUNNING", "PAUSE")
     slots = MAX_PARALLEL
     for pkg in packages:
         for l in pkg["links"]:
             l["running"] = False
-            if not active or l["finished"] or not pkg["enabled"] or slots <= 0:
+            if l["finished"] or not pkg["enabled"]:
                 continue
-            slots -= 1
-            l["running"] = True
-            l["loaded"] = min(l["size"], l["loaded"] + speed * dt)
+            if pkg.get("forced"):
+                l["running"] = True
+                l["loaded"] = min(l["size"], l["loaded"] + DL_SPEED * dt)
+            elif active and slots > 0:
+                slots -= 1
+                l["running"] = True
+                l["loaded"] = min(l["size"], l["loaded"] + speed * dt)
             if l["loaded"] >= l["size"]:
                 l["finished"], l["running"] = True, False
+        if pkg.get("forced") and all(l["finished"] for l in pkg["links"]):
+            pkg["forced"] = False
         if pkg["extract"] is None and all(l["finished"] for l in pkg["links"]):
             pkg["extract"] = "queued" if is_archive(pkg) else "done"
 
@@ -118,7 +125,7 @@ def pkg_view(p):
     loaded = sum(int(l["loaded"]) for l in links)
     total = sum(l["size"] for l in links)
     running = any(l["running"] for l in links)
-    speed = sum(DL_SPEED if state["controller"] == "RUNNING" else PAUSE_SPEED
+    speed = sum(DL_SPEED if (state["controller"] == "RUNNING" or p.get("forced")) else PAUSE_SPEED
                 for l in links if l["running"])
     finished = all(l["finished"] for l in links)
     status = ""
@@ -133,7 +140,7 @@ def pkg_view(p):
         "childCount": len(links), "enabled": p["enabled"], "finished": finished,
         "running": running, "speed": speed,
         "eta": int((total - loaded) / speed) if speed else -1,
-        "status": status, "saveTo": f"/output/{p['name']}",
+        "status": status, "saveTo": p.get("saveTo") or "/output",
     }
 
 
@@ -184,6 +191,20 @@ def handle(path, args):
         return [pkg_view(p) for p in packages]
     if path == "/downloadsV2/queryLinks":
         return [link_view(p, l) for p in packages for l in p["links"]]
+    if path == "/downloadsV2/setEnabled":
+        ids = set(args[2] if len(args) > 2 else [])
+        for p in packages:
+            if p["uuid"] in ids:
+                p["enabled"] = bool(args[0])
+                if not p["enabled"]:
+                    p["forced"] = False
+        return None
+    if path in ("/downloadsV2/forceDownload", "/downloadcontroller/forceDownload"):
+        ids = set(args[1] if len(args) > 1 else [])
+        for p in packages:
+            if p["uuid"] in ids:
+                p["forced"], p["enabled"] = True, True
+        return True
     if path == "/downloadsV2/removeLinks":
         ids = set(args[1] if len(args) > 1 else [])
         packages[:] = [p for p in packages if p["uuid"] not in ids]
@@ -201,8 +222,23 @@ def handle(path, args):
     if path == "/linkgrabberv2/isCollecting":
         return time.monotonic() < collect_until[0]
     if path == "/linkgrabberv2/queryPackages":
-        return [{"uuid": p["uuid"], "name": p["name"], "childCount": len(p["links"])}
+        return [{"uuid": p["uuid"], "name": p["name"], "childCount": len(p["links"]),
+                 "bytesTotal": sum(l["size"] for l in p["links"]), "saveTo": p.get("saveTo") or "/output",
+                 "onlineCount": len(p["links"]), "offlineCount": 0, "unknownCount": 0,
+                 "hosts": ["example.com"]}
                 for p in grabber]
+    if path == "/linkgrabberv2/setDownloadDirectory":
+        directory, ids = args[0], set(args[1] if len(args) > 1 else [])
+        if not isinstance(directory, str) or not directory.startswith("/"):
+            raise ValueError(f"Ordner ungültig: {directory!r}")
+        for p in grabber:
+            if p["uuid"] in ids:
+                p["saveTo"] = directory
+        return None
+    if path == "/linkgrabberv2/removeLinks":
+        ids = set(args[1] if len(args) > 1 else [])
+        grabber[:] = [p for p in grabber if p["uuid"] not in ids]
+        return None
     if path == "/linkgrabberv2/addLinks":
         q = args[0] if args and isinstance(args[0], dict) else {}
         urls = [u.strip() for u in str(q.get("links", "")).splitlines() if u.strip()]

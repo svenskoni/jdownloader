@@ -11,13 +11,17 @@ Portainer-Stack aus drei Teilen:
 **Was die Oberfläche kann:**
 - URLs hinzufügen (eine oder mehrere, optional mit Paketname und Archiv-Passwort)
 - DLC/CCF/RSDF hochladen (Datei wählen oder per Drag & Drop)
-- ▶ Start, ⏸ Halt/Fortsetzen, ⏹ Stop
+- ▶ Start, ⏸ Halt/Fortsetzen, ⏹ Stop für alles, dazu ▶/⏸ **pro Paket**
 - Anzeige **„Aktuell“**, also was JD gerade macht, z. B. „Lädt 2 Dateien · Entpackt »Film«“, dazu der Gesamtfortschritt
 - Pro Paket: Phase (Download / Entpacken / Entpacken wartet / Fertig / Fehler), Fortschritt in %, Größe, Geschwindigkeit, Restzeit und der Statustext von JD
 - Pakete aus der Liste entfernen und „Fertige entfernen“ (die Dateien bleiben dabei immer erhalten)
+- **Linkgrabber** mit **Kategorien** (Anime, Filme, Serien, Spiele): pro Paket Kategorie wählen und übernehmen – die Dateien landen direkt im passenden Ordner (siehe [Kategorien](#6-kategorien))
 - **Click'n'Load** von Download-Seiten annehmen (siehe [Click'n'Load](#clicknload))
+- Anmeldeseite mit **„Angemeldet bleiben“** (Cookie, Standard 365 Tage)
 
-Neue Links und Container landen zuerst im Linkgrabber von JDownloader. Die WebUI übernimmt sie automatisch in die Download-Liste, sobald JD sie fertig geprüft hat. Bei „Sofort starten“ wird der Download auch gleich gestartet. Bleibt doch einmal etwas im Linkgrabber hängen, erscheint ein Hinweis mit dem Button **„Alle übernehmen“**.
+Über das Formular hinzugefügte Links und Container landen zuerst im Linkgrabber von JDownloader. Die WebUI übernimmt sie automatisch in die Download-Liste, sobald JD sie fertig geprüft hat, mit der im Formular gewählten Kategorie. Bei „Sofort starten“ wird der Download auch gleich gestartet. Was im Linkgrabber wartet (z. B. per Click'n'Load), zeigt die Karte **Linkgrabber**.
+
+**Pro Paket:** ▶ startet genau dieses Paket sofort („Erzwungener Start“ in JD), auch wenn der Rest gestoppt ist. ⏸ hält es an: JD kennt kein Pausieren einzelner Pakete, das Paket wird deshalb **deaktiviert** (Anzeige „Angehalten“). Bereits geladene Teile bleiben liegen, ▶ setzt es fort, sofern der Hoster Fortsetzen unterstützt.
 
 ---
 
@@ -54,12 +58,14 @@ Die JD-Konfiguration unter `/opt/jdownloader/config` bleibt erhalten.
 | `CNL_ALLOWED` | empfohlen: IP-Adresse(n) oder Netze, die Click'n'Load schicken dürfen, z. B. `10.200.0.10` oder `10.200.0.10, 192.168.1.0/24`. Leer = jede Adresse |
 | `CNL_PORT` | optional, Port für Click'n'Load auf dem Server, Standard `9666` |
 | `CNL_ACTION` | optional, was mit per Click'n'Load geschickten Paketen passiert: `grabber` = bleiben im Linkgrabber (Standard), `queue` = kommen in die Download-Liste, `start` = kommen in die Download-Liste und starten |
+| `SESSION_DAYS` | optional, so viele Tage bleibt ein Browser nach „Angemeldet bleiben“ angemeldet, Standard `365` |
+| `CATEGORIES` | optional, eigene Kategorien, siehe [Kategorien](#6-kategorien) |
 
 Danach auf **Deploy the stack** klicken. Beim ersten Mal baut Portainer das WebUI-Image, das dauert etwa eine Minute.
 
 ### 4. Prüfen
 1. *Containers → jd-init → Logs* sollte `Lokale JD-API freigeschaltet.` oder `… bereits freigeschaltet` zeigen. Dass `jd-init` danach als **exited** dasteht, ist normal.
-2. Öffne `http://<server-ip>:8080` und melde dich mit `JD_USER`/`JD_PASS` an.
+2. Öffne `http://<server-ip>:8080` und melde dich mit `JD_USER`/`JD_PASS` an. Mit „Angemeldet bleiben“ fragt die WebUI in diesem Browser erst nach `SESSION_DAYS` Tagen wieder. Ändert sich `JD_PASS`, sind alle Anmeldungen ungültig.
 3. JD braucht nach dem Start ca. 30–60 s. Bis dahin zeigt die WebUI „Keine Verbindung“.
 
 Optional kannst du die API direkt testen (Konsole des `jd-webui`-Containers in Portainer):
@@ -72,12 +78,29 @@ Die Downloads liegen auf der Daten-HDD des Docker-Hosts, die dort unter `/mnt/da
 
 | Auf dem Host | Im Container | Zweck |
 |---|---|---|
-| `/mnt/data_disk/Download` | `/output` | Download-Ordner (Standard von JD in diesem Image) |
-| `/mnt/data_disk/Fertig` | `/fertig` | Ziel fürs Entpacken |
+| `/mnt/data_disk/Download` | `/output` | Download-Ordner für alles ohne Kategorie (Standard von JD in diesem Image) |
+| `/mnt/data_disk/Fertig` | `/fertig` | optionaler Ablageordner |
+| `/mnt/data_disk/Medien` | `/medien` | Kategorien Anime, Filme, Serien (`/medien/Anime` …) |
+| `/mnt/data_disk/Spiele` | `/spiele` | Kategorie Spiele |
 
-Das Entpack-Ziel einmalig in der JD-GUI (Port 5800) setzen: *Einstellungen → Archiv-Entpacker*, „Entpacken nach“ auf `/fertig`. Unter *Einstellungen → Allgemein* sollte als Download-Ordner `/output` stehen.
+Einmalig in der JD-GUI (Port 5800) prüfen:
+- *Einstellungen → Allgemein*: Download-Ordner `/output`.
+- *Einstellungen → Archiv-Entpacker*: **„Entpacken nach“ ausschalten**, also im Ordner des Archivs entpacken. Sonst landet alles Entpackte in einem festen Ordner statt in der Kategorie. Dazu „Archive nach erfolgreichem Entpacken löschen“ einschalten, dann bleiben in den Medien-Ordnern nur die fertigen Dateien.
+
+Der JD-Container schreibt als UID 1000. Die Ordner `Medien/*` und `Spiele` müssen für diesen Benutzer beschreibbar sein (`ls -ln /mnt/data_disk /mnt/data_disk/Medien` zeigt Besitzer und Rechte).
 
 Die HDD muss eingehängt sein, bevor der Stack startet. Fehlt sie, legt Docker die Ordner leer auf der Systemplatte an und JD lädt dorthin.
+
+### 6. Kategorien
+Im Linkgrabber hat jedes Paket Knöpfe für die Kategorien. Ein Klick setzt den Download-Ordner des Pakets auf den Ordner der Kategorie plus einen Unterordner mit dem Paketnamen, z. B. `/medien/Anime/<Paket>` (= `/mnt/data_disk/Medien/Anime/<Paket>` auf dem Host). Mit **„Ordner ändern“** lässt sich der Unterordner anpassen, auch verschachtelt wie `Serie/Staffel 1`, oder leeren (dann direkt in `/medien/Serien`). Danach **Übernehmen**, mit „danach starten“ startet der Download auch gleich. Pakete ohne Kategorie gehen nach `/output`.
+
+Im Formular „Hinzufügen“ gibt es dieselben Kategorien als Auswahl, die gilt dann für alles, was gerade hinzugefügt wird.
+
+Die Kategorien kommen aus der Variable `CATEGORIES` (Format `Name=/ordner/im/jdownloader-container`, mehrere mit `;` getrennt). Standard:
+```
+Anime=/medien/Anime;Filme=/medien/Filme;Serien=/medien/Serien;Spiele=/spiele
+```
+Neue Hauptordner brauchen zusätzlich ein Volume beim Service `jdownloader`. Mit `CATEGORY_SUBFOLDER=false` legt die WebUI keinen Unterordner pro Paket an.
 
 ### Updates
 Nach Änderungen im Repo: *Stack → Pull and redeploy*. Taucht die Änderung danach nicht auf, lösche unter *Images* das Image `jd-webui:local` und führe den Redeploy noch einmal aus.
@@ -86,7 +109,7 @@ Nach Änderungen im Repo: *Stack → Pull and redeploy*. Taucht die Änderung da
 
 ## Click'n'Load
 
-Download-Seiten schicken die Links beim Klick auf den Click'n'Load-Button an `http://127.0.0.1:9666`, also an einen JDownloader **auf dem eigenen PC**. Damit sie beim Server ankommen, braucht der Browser-PC eine Brücke dorthin. Die WebUI nimmt die Daten auf Port 9666 an, entschlüsselt die Links und übergibt sie an JDownloader. Standardmäßig landen sie im Linkgrabber von JDownloader, dort kannst du sie prüfen, den Ordner wählen und selbst starten. Die WebUI zeigt wartende Pakete als Hinweis mit dem Button „Alle übernehmen“. Mit `CNL_ACTION=queue` bzw. `start` übernimmt die WebUI sie stattdessen automatisch in die Download-Liste bzw. startet sie auch. Alles bleibt im LAN, MyJDownloader wird nicht gebraucht.
+Download-Seiten schicken die Links beim Klick auf den Click'n'Load-Button an `http://127.0.0.1:9666`, also an einen JDownloader **auf dem eigenen PC**. Damit sie beim Server ankommen, braucht der Browser-PC eine Brücke dorthin. Die WebUI nimmt die Daten auf Port 9666 an, entschlüsselt die Links und übergibt sie an JDownloader. Standardmäßig landen sie im Linkgrabber von JDownloader. Die WebUI zeigt sie in der Karte **Linkgrabber**, dort wählst du die Kategorie und übernimmst sie. Mit `CNL_ACTION=queue` bzw. `start` übernimmt die WebUI sie stattdessen automatisch in die Download-Liste bzw. startet sie auch. Alles bleibt im LAN, MyJDownloader wird nicht gebraucht.
 
 Auf dem Server ist dafür nur eines zu tun: In Portainer `CNL_ALLOWED` auf die IP(s) der PCs setzen, von denen Click'n'Load kommen darf, und den Stack neu deployen. Für die Brücke am PC gibt es zwei Wege.
 
@@ -160,7 +183,8 @@ Setze in Portainer die Variable `WEBUI_PORT`, z. B. auf `8090`.
 
 ## Sicherheit
 - Die WebUI läuft absichtlich per **plain HTTP** und ist nur fürs Intranet gedacht. Gib Port 8080 im Router **nicht** frei.
-- Login per Basic Auth mit denselben Zugangsdaten wie die JD-GUI.
+- Login über die Anmeldeseite mit denselben Zugangsdaten wie die JD-GUI. „Angemeldet bleiben“ setzt ein signiertes Cookie (HttpOnly, SameSite=Lax) ohne Passwort darin. Abmelden oben rechts löscht es in diesem Browser. Für Skripte geht weiterhin Basic Auth.
+- Die JD-GUI (5800) hat ihren eigenen Login aus dem Image; `WEB_AUTHENTICATION_TOKEN_VALIDITY_TIME=8760` hält ihn ein Jahr. Nach einem Neustart des Containers fragt sie trotzdem einmal neu (Verhalten des Images).
 - Die JD-API (Port 3128) hat keinen eigenen Login. Sie wird **nicht** nach außen veröffentlicht und ist nur aus den Docker-Netzen `jd-internal` und `proxy-network` erreichbar.
 - Der Click'n'Load-Port (9666) hat **keinen Login**, weil Download-Seiten sich nicht anmelden können. Wer ihn erreicht, kann Links in deinen JDownloader schieben (sonst nichts, die Oberfläche und Steuerung gibt es dort nicht). Deshalb `CNL_ALLOWED` setzen und den Port in der Firewall nur für deinen PC öffnen.
 

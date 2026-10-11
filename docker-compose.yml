@@ -34,10 +34,13 @@ services:
       - WEB_AUTHENTICATION=1
       - WEB_AUTHENTICATION_USERNAME=${JD_USER}
       - WEB_AUTHENTICATION_PASSWORD=${JD_PASS}
+      - WEB_AUTHENTICATION_TOKEN_VALIDITY_TIME=8760   # JD-Oberfläche (5800): 1 Jahr angemeldet bleiben
     volumes:
       - /opt/jdownloader/config:/config:rw
-      - /mnt/data_disk/Download:/output:rw   # HDD: Downloads (JD-Standardordner /output)
-      - /mnt/data_disk/Fertig:/fertig:rw     # HDD: Ziel fürs Entpacken (in JD einstellen, siehe README)
+      - /mnt/data_disk/Download:/output:rw   # HDD: Downloads ohne Kategorie (JD-Standardordner /output)
+      - /mnt/data_disk/Fertig:/fertig:rw     # HDD: optionaler Ablageordner
+      - /mnt/data_disk/Medien:/medien:rw     # HDD: Kategorien Anime/Filme/Serien (siehe CATEGORIES)
+      - /mnt/data_disk/Spiele:/spiele:rw     # HDD: Kategorie Spiele
     networks:
       - proxy-network
       - jd-internal
@@ -61,6 +64,9 @@ services:
       - WEBUI_PASS=${JD_PASS}
       - CNL_ALLOWED=${CNL_ALLOWED:-}         # z. B. IP deines PCs; leer = jede Adresse
       - CNL_ACTION=${CNL_ACTION:-grabber}     # grabber = im Linkgrabber lassen, queue = in Downloads, start = sofort starten
+      - SESSION_DAYS=${SESSION_DAYS:-365}     # so lange bleibt der Browser nach dem Anmelden angemeldet
+      # Kategorien im Linkgrabber: Name=Ordner im jdownloader-Container (Volumes oben)
+      - CATEGORIES=${CATEGORIES:-Anime=/medien/Anime;Filme=/medien/Filme;Serien=/medien/Serien;Spiele=/spiele}
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
       interval: 30s

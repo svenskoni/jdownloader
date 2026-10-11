@@ -3,7 +3,9 @@
 JD WebUI - schlanke Web-Oberfläche für JDownloader (lokale API, Port 3128).
 
 Funktionen: URLs/DLC hinzufügen, Start/Halt/Stop, Fortschritt und aktuelle
-Tätigkeit (Download/Entpacken) anzeigen. Basic Auth über WEBUI_USER/WEBUI_PASS.
+Tätigkeit (Download/Entpacken) anzeigen, einzelne Pakete starten/anhalten.
+Login über eine Anmeldeseite mit WEBUI_USER/WEBUI_PASS, danach bleibt der Browser per
+Cookie angemeldet (SESSION_DAYS). Basic Auth funktioniert weiter, z. B. für Skripte.
 
 Zusätzlich ein Click'n'Load-Empfänger auf eigenem Port (CNL_PORT, Standard 9666):
 dort gibt es nur die CNL-Endpunkte, ohne Login (Download-Seiten können sich nicht
@@ -12,7 +14,9 @@ im Linkgrabber bleiben, übernommen oder auch gestartet werden.
 """
 
 import base64
+import hashlib
 import hmac
+import html
 import logging
 import os
 import re
@@ -21,7 +25,7 @@ import time
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 
-from flask import Flask, Response, jsonify, request, send_from_directory
+from flask import Flask, Response, jsonify, redirect, request, send_from_directory
 
 import cnl
 import jdapi
@@ -31,6 +35,14 @@ WEBUI_PASS = os.environ.get("WEBUI_PASS", "")
 MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "5"))
 # So lange wartet die WebUI nach dem Hinzufügen, bis JD die Links gesammelt hat
 CONFIRM_TIMEOUT = float(os.environ.get("CONFIRM_TIMEOUT", "90"))
+# So lange bleibt der Browser nach "Angemeldet bleiben" angemeldet
+SESSION_DAYS = max(1, int(os.environ.get("SESSION_DAYS", "365")))
+SESSION_COOKIE = "jdwebui_session"
+# Kategorien im Linkgrabber: Name=Ordner im JDownloader-Container (siehe Volumes im Stack)
+CATEGORIES_SPEC = os.environ.get(
+    "CATEGORIES", "Anime=/medien/Anime;Filme=/medien/Filme;Serien=/medien/Serien;Spiele=/spiele")
+# Pro Paket ein Unterordner mit dem Paketnamen, z. B. /medien/Serien/<Paket>
+CATEGORY_SUBFOLDER = os.environ.get("CATEGORY_SUBFOLDER", "true").strip().lower() not in ("0", "false", "no", "off")
 
 # Click'n'Load: Port im Container (gunicorn bindet ihn, siehe Dockerfile)
 CNL_PORT = int(os.environ.get("CNL_PORT", "9666"))
@@ -70,19 +82,61 @@ if CNL_ACTION not in CNL_ACTIONS:
     CNL_ACTION = "grabber"
 log.info("Click'n'Load: Pakete %s (CNL_ACTION=%s)", CNL_ACTIONS[CNL_ACTION], CNL_ACTION)
 
+def _parse_categories(spec):
+    cats = {}
+    for part in re.split(r"[;,\n]+", spec or ""):
+        name, sep, path = part.partition("=")
+        name, path = name.strip(), path.strip().rstrip("/")
+        if not sep or not name or not path.startswith("/"):
+            if part.strip():
+                log.warning("CATEGORIES: Eintrag %r ignoriert (Format Name=/pfad)", part.strip())
+            continue
+        cats[name] = path
+    return cats
+
+
+CATEGORIES = _parse_categories(CATEGORIES_SPEC)
+CATEGORY_LIST = [{"name": k, "path": v} for k, v in CATEGORIES.items()]
+log.info("Kategorien: %s", ", ".join(f"{k} -> {v}" for k, v in CATEGORIES.items()) or "keine")
+
 CNL_PATHS = {"/jdcheck.js", "/crossdomain.xml", "/flash", "/flash/",
              "/flash/add", "/flash/addcrypted", "/flash/addcrypted2"}
 
 
-# ── Basic Auth ────────────────────────────────────────────────────────────────
+# ── Login (Cookie) und Basic Auth ─────────────────────────────────────────────
+# Das Cookie enthält nur Ablaufzeit + Signatur. Der Schlüssel hängt an Benutzer und
+# Passwort: Wird das Passwort geändert, sind alle bestehenden Anmeldungen ungültig.
+# Er ist über Neustarts/Neubau des Containers stabil, man bleibt also angemeldet.
+
+_SESSION_KEY = hashlib.sha256(f"jd-webui-session|{WEBUI_USER}|{WEBUI_PASS}".encode()).digest()
+
+
+def _session_sig(exp):
+    return hmac.new(_SESSION_KEY, f"{WEBUI_USER}|{exp}".encode(), hashlib.sha256).hexdigest()
+
+
+def _session_token(exp):
+    return f"{exp}.{_session_sig(exp)}"
+
+
+def _session_ok():
+    exp, _, sig = (request.cookies.get(SESSION_COOKIE) or "").partition(".")
+    if not exp.isdigit() or int(exp) < time.time():
+        return False
+    return hmac.compare_digest(sig.encode(), _session_sig(exp).encode())
+
+
+def _creds_ok(user, password):
+    user_ok = hmac.compare_digest((user or "").encode(), WEBUI_USER.encode())
+    pass_ok = hmac.compare_digest((password or "").encode(), WEBUI_PASS.encode())
+    return user_ok and pass_ok
+
 
 def _auth_ok():
     auth = request.authorization
     if not auth or auth.type != "basic":
         return False
-    user_ok = hmac.compare_digest((auth.username or "").encode(), WEBUI_USER.encode())
-    pass_ok = hmac.compare_digest((auth.password or "").encode(), WEBUI_PASS.encode())
-    return user_ok and pass_ok
+    return _creds_ok(auth.username, auth.password)
 
 
 def _on_cnl_port():
@@ -104,12 +158,15 @@ def require_login():
         return None
     if request.path in CNL_PATHS:
         return ("Nicht gefunden", 404)
-    if not WEBUI_USER or request.path == "/healthz":
+    if not WEBUI_USER or request.path in ("/healthz", "/login") or request.path.startswith("/static/"):
         return None
-    if _auth_ok():
+    if _session_ok() or _auth_ok():
         return None
-    return ("Login erforderlich", 401,
-            {"WWW-Authenticate": 'Basic realm="JDownloader WebUI", charset="UTF-8"'})
+    if request.path.startswith("/api/"):
+        # Kein WWW-Authenticate: sonst öffnet der Browser wieder sein Passwortfenster
+        return jsonify({"ok": False, "error": "Nicht angemeldet", "login": True}), 401
+    # Relativ weiterleiten, damit es auch hinter einem Proxy mit Pfad-Präfix passt
+    return redirect("../" * (request.path.count("/") - 1) + "login", code=303)
 
 
 @app.after_request
@@ -190,6 +247,49 @@ def _archive_for(links, queue):
     return None
 
 
+_BAD_PATH_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
+
+
+def _folder_name(name):
+    """Paketname als Ordnername: ohne Pfadzeichen/Anführungszeichen, nicht zu lang."""
+    n = re.sub(r"\s+", " ", _BAD_PATH_CHARS.sub(" ", name or "")).strip(" .")
+    n = n[:150].strip(" .")
+    return "" if n.lower() == "null" else n
+
+
+def _folder_path(text):
+    """Eigener Unterordner, auch verschachtelt ("Serie/Staffel 1"). Kein "..", keine
+    absoluten Pfade: jeder Teil wird wie ein Ordnername bereinigt."""
+    parts = [_folder_name(p) for p in re.split(r"[/\\]+", text or "")]
+    return "/".join(p for p in parts if p)
+
+
+def _category_dir(category, package_name, folder=None):
+    base = CATEGORIES[category]
+    if folder is not None:
+        sub = _folder_path(folder)
+    else:
+        sub = _folder_name(package_name) if CATEGORY_SUBFOLDER else ""
+    return f"{base}/{sub}" if sub else base
+
+
+def _apply_category(category, pkgs):
+    """Setzt für Linkgrabber-Pakete den Ordner der Kategorie. Liefert Fehlertext oder None."""
+    for g in pkgs:
+        r = jdapi.grabber_set_directory(_category_dir(category, g.get("name")), [g.get("uuid")])
+        if not r["ok"]:
+            return r["error"]
+    return None
+
+
+def _category_of(save_to):
+    st = (save_to or "").rstrip("/")
+    for name, path in sorted(CATEGORIES.items(), key=lambda kv: -len(kv[1])):
+        if st == path or st.startswith(path + "/"):
+            return name
+    return None
+
+
 def _package_view(p, links, queue):
     total = p.get("bytesTotal") or 0
     loaded = p.get("bytesLoaded") or 0
@@ -220,7 +320,7 @@ def _package_view(p, links, queue):
         phase = "done"
         label = "Fertig · entpackt" if "SUCCESSFUL" in ex_states else "Fertig"
     elif p.get("enabled") is False:
-        phase, label = "waiting", "Deaktiviert"
+        phase, label = "waiting", "Angehalten"
     else:
         phase, label = "waiting", "Wartet"
 
@@ -239,6 +339,23 @@ def _package_view(p, links, queue):
         "filesDone": files_done,
         "status": status_text,
         "saveTo": p.get("saveTo") or "",
+        "category": _category_of(p.get("saveTo")),
+        "enabled": p.get("enabled") is not False,
+    }
+
+
+def _grabber_view(g):
+    return {
+        "uuid": g.get("uuid"),
+        "name": g.get("name") or "Paket",
+        "links": g.get("childCount") or 0,
+        "bytes": g.get("bytesTotal") or 0,
+        "online": g.get("onlineCount") or 0,
+        "offline": g.get("offlineCount") or 0,
+        "unknown": (g.get("unknownCount") or 0) + (g.get("tempUnknownCount") or 0),
+        "hosts": g.get("hosts") or [],
+        "saveTo": g.get("saveTo") or "",
+        "category": _category_of(g.get("saveTo")),
     }
 
 
@@ -290,7 +407,8 @@ def build_overview():
 
     if not res["state"]["ok"]:
         return {"ok": True, "connected": False, "error": res["state"]["error"],
-                "notices": notices, "cnl": cnl_info}
+                "notices": notices, "cnl": cnl_info, "categories": CATEGORY_LIST,
+                "auth": bool(WEBUI_USER)}
 
     state = str(res["state"]["data"] or "").upper()
     links = jdapi.as_list(res["links"])
@@ -318,7 +436,10 @@ def build_overview():
                   "pct": round(loaded / total * 100, 1) if total else 0},
         "packages": packages,
         "grabber": {"packages": len(grabber),
-                    "links": sum(g.get("childCount") or 0 for g in grabber)},
+                    "links": sum(g.get("childCount") or 0 for g in grabber),
+                    "list": [_grabber_view(g) for g in grabber]},
+        "categories": CATEGORY_LIST,
+        "auth": bool(WEBUI_USER),
         "warning": errors[0] if errors else None,
         "notices": notices,
         "cnl": cnl_info,
@@ -363,30 +484,47 @@ def control(action):
 
 # ── Hinzufügen ────────────────────────────────────────────────────────────────
 
+def _grabber_map():
+    return {p.get("uuid"): p for p in jdapi.as_list(jdapi.grabber_packages())}
+
+
 def _grabber_uuids():
-    return {p.get("uuid") for p in jdapi.as_list(jdapi.grabber_packages())}
+    return set(_grabber_map())
+
+
+def _category_arg(value):
+    """Kategorie aus dem Formular: leer = keine, unbekannt = Fehler (None, Fehlertext)."""
+    value = str(value or "").strip()
+    if value and value not in CATEGORIES:
+        return None, "Unbekannte Kategorie."
+    return value or None, None
 
 
 # Alles, was kurz nacheinander hinzugefügt wird (z. B. mehrere DLCs), landet in einem
 # gemeinsamen "Batch". Ein Worker wartet, bis JD fertig gesammelt hat, und schiebt alle
 # neuen Linkgrabber-Pakete in die Download-Liste. Einzelne Pakete lassen sich nicht
 # zuverlässig einem Upload zuordnen - daher eine gemeinsame Meldung pro Batch.
+# Mit Kategorie bekommen die Pakete vorher ihren Ordner. Kommen in einen laufenden Batch
+# Pakete mit anderer Kategorie, bleibt der Rest im Linkgrabber (dort zuordnen), damit
+# nichts im falschen Ordner landet.
 _batch = None
 _batch_lock = threading.Lock()
 SETTLE_SECONDS = 3.0
 
 
-def _queue_confirm(before, autostart, label):
+def _queue_confirm(before, autostart, label, category=None):
     global _batch
     with _batch_lock:
         if _batch is None:
             _batch = {"before": before, "autostart": autostart, "labels": [label],
-                      "last_add": time.monotonic()}
+                      "last_add": time.monotonic(), "category": category, "conflict": False}
             threading.Thread(target=_confirm_worker, daemon=True).start()
         else:
             _batch["autostart"] = _batch["autostart"] or autostart
             _batch["labels"].append(label)
             _batch["last_add"] = time.monotonic()
+            if category != _batch["category"]:
+                _batch["conflict"] = True
 
 
 def _confirm_worker():
@@ -396,10 +534,22 @@ def _confirm_worker():
         time.sleep(1.5)
         with _batch_lock:
             before, last_add = _batch["before"], _batch["last_add"]
+            category, conflict = _batch["category"], _batch["conflict"]
+        if conflict:
+            with _batch_lock:
+                batch, _batch = _batch, None
+            break
         collecting = jdapi.is_collecting()
-        fresh = _grabber_uuids() - before - moved
+        pkgs = _grabber_map()
+        fresh = set(pkgs) - before - moved
         if fresh and collecting is not True:
-            r = jdapi.grabber_to_downloads(fresh)
+            r = {"ok": True}
+            if category:
+                err = _apply_category(category, [pkgs[u] for u in fresh])
+                if err:
+                    r = {"ok": False, "error": err}
+            if r["ok"]:
+                r = jdapi.grabber_to_downloads(fresh)
             if not r["ok"]:
                 error = r["error"]
             else:
@@ -416,7 +566,7 @@ def _confirm_worker():
                 continue
         # Beenden - unter dem Lock prüfen, dass nicht gerade noch etwas dazukam
         with _batch_lock:
-            if error is None and _batch["last_add"] != last_add:
+            if error is None and not _batch["conflict"] and _batch["last_add"] != last_add:
                 quiet = 0
                 continue
             batch, _batch = _batch, None
@@ -428,6 +578,14 @@ def _confirm_worker():
     if error:
         notice("err", f"{label}: Übernahme in die Downloads fehlgeschlagen – {error}")
         return
+    if batch["conflict"]:
+        if moved and batch["autostart"]:
+            jdapi.start()
+        n = len(moved)
+        notice("warn", f"{label}: unterschiedliche Kategorien gleichzeitig hinzugefügt – "
+                       + (f"{n} Paket{'e' if n != 1 else ''} übernommen, " if n else "")
+                       + "der Rest wartet im Linkgrabber auf Zuordnung.")
+        return
     if not moved:
         notice("warn", f"{label}: Keine neuen Pakete gefunden (Links offline oder Datei ungültig?).")
         return
@@ -435,6 +593,7 @@ def _confirm_worker():
         jdapi.start()
     n = len(moved)
     notice("ok", f"{label}: {n} Paket{'e' if n != 1 else ''} übernommen"
+                 + (f" ({batch['category']})" if batch["category"] else "")
                  + (" und gestartet" if batch["autostart"] else ""))
 
 
@@ -447,14 +606,17 @@ def add_url():
     autostart = bool(data.get("autostart", True))
     package_name = str(data.get("packageName") or "").strip()
     password = str(data.get("password") or "").strip()
+    category, err = _category_arg(data.get("category"))
+    if err:
+        return fail(err, 400)
 
     before = _grabber_uuids()
     r = jdapi.add_links(links, package_name, autostart=False, extract_password=password)
     if not r["ok"]:
         return jsonify(r)
     count = len([l for l in links.splitlines() if l.strip()])
-    log.info("URL hinzugefügt (%d Zeile(n))", count)
-    _queue_confirm(before, autostart, package_name or "Links")
+    log.info("URL hinzugefügt (%d Zeile(n))%s", count, f" -> {category}" if category else "")
+    _queue_confirm(before, autostart, package_name or "Links", category)
     invalidate()
     return jsonify({"ok": True, "message": "An JDownloader übergeben – Links werden geprüft …"})
 
@@ -475,13 +637,17 @@ def add_dlc():
     if not content:
         return fail("Die Datei ist leer.", 400)
     autostart = request.form.get("autostart", "true").lower() != "false"
+    category, err = _category_arg(request.form.get("category"))
+    if err:
+        return fail(err, 400)
 
     before = _grabber_uuids()
     r = jdapi.add_container(ctype, base64.b64encode(content).decode("ascii"))
     if not r["ok"]:
         return jsonify(r)
-    log.info("Container hinzugefügt: %s (%d Bytes)", f.filename, len(content))
-    _queue_confirm(before, autostart, f.filename)
+    log.info("Container hinzugefügt: %s (%d Bytes)%s", f.filename, len(content),
+             f" -> {category}" if category else "")
+    _queue_confirm(before, autostart, f.filename, category)
     invalidate()
     return jsonify({"ok": True, "message": f"{f.filename} an JDownloader übergeben – wird entschlüsselt …"})
 
@@ -500,6 +666,58 @@ def confirm_all():
     r = jdapi.grabber_to_downloads(uuids)
     if r["ok"] and data.get("autostart"):
         jdapi.start()
+    invalidate()
+    return jsonify(r)
+
+
+def _package_id(data):
+    try:
+        return int(data.get("packageId"))
+    except (TypeError, ValueError):
+        return None
+
+
+@app.post("/api/linkgrabber/category")
+def grabber_category():
+    data = request.get_json(silent=True) or {}
+    pid, category = _package_id(data), data.get("category")
+    if pid is None:
+        return fail("Ungültige Paket-ID.", 400)
+    if category not in CATEGORIES:
+        return fail("Unbekannte Kategorie.", 400)
+    pkg = _grabber_map().get(pid)
+    if not pkg:
+        return fail("Das Paket ist nicht mehr im Linkgrabber.")
+    # Optional eigener Unterordner (z. B. "Serie/Staffel 1"), sonst der Paketname
+    folder = data.get("folder")
+    target = _category_dir(category, pkg.get("name"), None if folder is None else str(folder))
+    r = jdapi.grabber_set_directory(target, [pid])
+    invalidate()
+    if not r["ok"]:
+        return jsonify(r)
+    log.info("Linkgrabber: %s -> %s", pkg.get("name"), target)
+    return jsonify({"ok": True, "message": f"{category}: {target}", "saveTo": target})
+
+
+@app.post("/api/linkgrabber/confirm")
+def grabber_confirm():
+    data = request.get_json(silent=True) or {}
+    pid = _package_id(data)
+    if pid is None:
+        return fail("Ungültige Paket-ID.", 400)
+    r = jdapi.grabber_to_downloads([pid])
+    if r["ok"] and data.get("autostart"):
+        jdapi.start()
+    invalidate()
+    return jsonify(r)
+
+
+@app.post("/api/linkgrabber/remove")
+def grabber_remove():
+    pid = _package_id(request.get_json(silent=True) or {})
+    if pid is None:
+        return fail("Ungültige Paket-ID.", 400)
+    r = jdapi.grabber_remove([pid])
     invalidate()
     return jsonify(r)
 
@@ -616,6 +834,27 @@ def cnl_addcrypted():
 
 # ── Aufräumen ─────────────────────────────────────────────────────────────────
 
+@app.post("/api/downloads/package")
+def package_control():
+    data = request.get_json(silent=True) or {}
+    pid, action = _package_id(data), data.get("action")
+    if pid is None:
+        return fail("Ungültige Paket-ID.", 400)
+    if action == "start":
+        # Aktivieren und genau dieses Paket erzwungen starten (auch wenn der Rest steht)
+        r = jdapi.set_enabled(True, [pid])
+        if r["ok"]:
+            r = jdapi.force_download([pid])
+    elif action == "pause":
+        # JD kennt kein Pausieren pro Paket: Deaktivieren hält es an, Teilstücke bleiben
+        r = jdapi.set_enabled(False, [pid])
+    else:
+        return fail("Unbekannte Aktion", 400)
+    invalidate()
+    log.info("Paket %s: %s -> %s", pid, action, "ok" if r["ok"] else r["error"])
+    return jsonify(r)
+
+
 @app.post("/api/downloads/remove")
 def remove_package():
     data = request.get_json(silent=True) or {}
@@ -636,6 +875,64 @@ def cleanup():
 
 
 # ── Sonstiges ─────────────────────────────────────────────────────────────────
+
+LOGIN_PAGE = """<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Anmelden · JD WebUI</title>
+  <link rel="stylesheet" href="static/style.css">
+</head>
+<body class="login-body">
+  <form class="card login" method="post" action="login">
+    <h1>JD WebUI</h1>
+    {error}
+    <label>Benutzer<input name="user" type="text" autocomplete="username" required autofocus value="{user}"></label>
+    <label>Passwort<input name="password" type="password" autocomplete="current-password" required></label>
+    <label class="check"><input name="remember" type="checkbox" checked> Angemeldet bleiben ({days} Tage)</label>
+    <button class="btn primary" type="submit">Anmelden</button>
+  </form>
+</body>
+</html>
+"""
+
+
+def _login_page(error="", user="", status=200):
+    err = f'<p class="login-error">{html.escape(error)}</p>' if error else ""
+    body = LOGIN_PAGE.format(error=err, user=html.escape(user, quote=True), days=SESSION_DAYS)
+    return Response(body, status=status, mimetype="text/html")
+
+
+@app.get("/login")
+def login_form():
+    if not WEBUI_USER or _session_ok():
+        return redirect("./", code=303)
+    return _login_page()
+
+
+@app.post("/login")
+def login_submit():
+    user = request.form.get("user", "")
+    if not _creds_ok(user, request.form.get("password", "")):
+        log.warning("Fehlgeschlagene Anmeldung für %r von %s", user[:40], request.remote_addr)
+        time.sleep(1.0)   # bremst Durchprobieren
+        return _login_page("Benutzer oder Passwort falsch.", user, status=401)
+    exp = int(time.time()) + SESSION_DAYS * 86400
+    resp = redirect("./", code=303)
+    resp.set_cookie(SESSION_COOKIE, _session_token(exp),
+                    max_age=SESSION_DAYS * 86400 if request.form.get("remember") else None,
+                    httponly=True, samesite="Lax", secure=request.is_secure, path="/")
+    log.info("Anmeldung von %s", request.remote_addr)
+    return resp
+
+
+@app.post("/logout")
+def logout():
+    resp = redirect("login", code=303)
+    resp.delete_cookie(SESSION_COOKIE, path="/")
+    return resp
+
 
 @app.get("/healthz")
 def healthz():
