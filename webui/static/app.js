@@ -319,9 +319,11 @@ function updateGrabRow(el, g) {
 function renderGrabber(d) {
   const g = (d.connected && d.grabber) || { packages: 0, links: 0, list: [] };
   const list = g.list || [];
-  $("#grabberCard").hidden = !list.length;
-  setText($("#grabCount"), list.length
-    ? `(${list.length} Paket${list.length !== 1 ? "e" : ""}, ${g.links} Link${g.links !== 1 ? "s" : ""})` : "");
+  const busy = d.connected && d.intake > 0;
+  $("#grabberCard").hidden = !list.length && !busy;
+  setText($("#grabCount"), (list.length
+    ? `(${list.length} Paket${list.length !== 1 ? "e" : ""}, ${g.links} Link${g.links !== 1 ? "s" : ""})` : "")
+    + (busy ? " · wird zusammengefasst …" : ""));
   $("#btnConfirmAll").hidden = list.length < 2;
 
   const seen = new Set();

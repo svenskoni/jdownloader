@@ -19,7 +19,9 @@ Portainer-Stack aus drei Teilen:
 - **Click'n'Load** von Download-Seiten annehmen (siehe [Click'n'Load](#clicknload))
 - Anmeldeseite mit **„Angemeldet bleiben“** (Cookie, Standard 365 Tage)
 
-Über das Formular hinzugefügte Links und Container landen zuerst im Linkgrabber von JDownloader. Die WebUI übernimmt sie automatisch in die Download-Liste, sobald JD sie fertig geprüft hat, mit der im Formular gewählten Kategorie (ohne Kategorie nach `Fertig`). Bei „Sofort starten“ wird der Download auch gleich gestartet. Was im Linkgrabber wartet (z. B. per Click'n'Load), zeigt die Karte **Linkgrabber**.
+**Ein Vorgang = ein Paket:** JD verteilt die Links einer DLC oder eines Click'n'Load gern auf viele Pakete (eins pro Datei). Die WebUI fasst alles aus einem Vorgang zu **einem** Paket zusammen, sobald JD fertig gesammelt hat. Es heißt wie die DLC-Datei (ohne `.dlc`) bzw. wie das Paket, das die Seite per Click'n'Load mitschickt. Ohne solchen Namen, oder wenn die DLC nur eine ID als Namen hat (z. B. `C3A52F7E1B.dlc`), nimmt sie den gemeinsamen Anfang der Dateinamen. Solange das läuft, steht in der Linkgrabber-Karte „wird zusammengefasst …“ (ein paar Sekunden).
+
+Über das Formular hinzugefügte Links und Container übernimmt die WebUI danach automatisch in die Download-Liste, mit der im Formular gewählten Kategorie (ohne Kategorie nach `Fertig/<Name>`). Bei „Sofort starten“ wird der Download auch gleich gestartet. Was im Linkgrabber wartet (z. B. per Click'n'Load), zeigt die Karte **Linkgrabber**.
 
 **Pro Paket:** ▶ startet genau dieses Paket sofort („Erzwungener Start“ in JD), auch wenn der Rest gestoppt ist. ⏸ hält es an: JD kennt kein Pausieren einzelner Pakete, das Paket wird deshalb **deaktiviert** (Anzeige „Angehalten“). Bereits geladene Teile bleiben liegen, ▶ setzt es fort, sofern der Hoster Fortsetzen unterstützt.
 
@@ -95,7 +97,7 @@ Die HDD muss eingehängt sein, bevor der Stack startet. Fehlt sie, legt Docker d
 ### 6. Kategorien
 Im Linkgrabber hat jedes Paket Knöpfe für die Kategorien. Ein Klick wählt die Kategorie und öffnet darunter das Feld für den **Ordnernamen**, vorbelegt mit dem Paketnamen und markiert, sodass du direkt lostippen kannst. Enter oder Klick daneben speichert, „Übernehmen“ nimmt den eingetippten Namen auch ohne Enter mit. Ergebnis z. B. `/medien/Anime/<Name>` (= `/mnt/data_disk/Medien/Anime/<Name>` auf dem Host). Verschachtelt geht auch (`Frieren/Staffel 1`). Ein leeres Feld bedeutet den Paketnamen, lose Dateien direkt im Kategorie-Ordner gibt es nicht. Nochmal auf die aktive Kategorie klicken wählt sie wieder ab.
 
-**Ohne Kategorie** einfach „Übernehmen“: Das Paket geht nach `/fertig/<Paket>` (`FALLBACK_DIR`), von dort sortierst du es selbst. Das gilt auch für „Alle übernehmen“ (Pakete mit Kategorie behalten ihren Ordner) und für das Formular ohne Kategorie. Mit „danach starten“ startet der Download gleich.
+**Ohne Kategorie** einfach „Übernehmen“: Das Paket geht nach `/fertig/<Paket>` (`FALLBACK_DIR`), also alles aus einer DLC in einen Ordner. Von dort sortierst du es selbst. Das gilt auch für „Alle übernehmen“ (Pakete mit Kategorie behalten ihren Ordner) und für das Formular ohne Kategorie. Mit „danach starten“ startet der Download gleich.
 
 Im Formular „Hinzufügen“ gibt es dieselben Kategorien als Auswahl, die gilt dann für alles, was gerade hinzugefügt wird.
 

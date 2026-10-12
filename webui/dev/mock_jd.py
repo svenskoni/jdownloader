@@ -31,7 +31,9 @@ state = {"controller": "STOPPED", "last": time.monotonic()}
 packages = []          # Download-Liste
 grabber = []           # Linkgrabber
 collect_until = [0.0]  # isCollecting == True bis zu diesem Zeitpunkt
-pending = []           # (fällig_ab, paket) - kommt nach dem "Sammeln" in den Linkgrabber
+pending = []           # (fällig_ab, [pakete], job_id) - kommt nach dem "Sammeln" in den Linkgrabber
+# Wie ältere JD-Versionen: kein Job-Filter bei queryLinks, keine Crawler-Jobs, kein movetoNewPackage
+OLD_JD = os.environ.get("MOCK_OLD_JD") == "1"
 
 
 def mk_link(name, size, loaded=0, finished=False, extraction=None):
@@ -73,7 +75,10 @@ def tick():
     # Linkgrabber füllen, wenn "Sammeln" vorbei ist
     for item in list(pending):
         if now >= item[0]:
-            grabber.append(item[1])
+            for pkg in item[1]:
+                for l in pkg["links"]:
+                    l["job"] = item[2]
+                grabber.append(pkg)
             pending.remove(item)
 
     # Downloads (erzwungene Pakete laufen auch bei gestopptem Controller, ohne Slot-Limit)
@@ -242,21 +247,68 @@ def handle(path, args):
     if path == "/linkgrabberv2/addLinks":
         q = args[0] if args and isinstance(args[0], dict) else {}
         urls = [u.strip() for u in str(q.get("links", "")).splitlines() if u.strip()]
-        name = q.get("packageName") or urls[0].rstrip("/").rsplit("/", 1)[-1] or "Links"
-        links = [mk_link(u.rstrip("/").rsplit("/", 1)[-1] or "datei", random.randint(40, 300) * MB)
-                 for u in urls]
+        fname = lambda u: u.rstrip("/").rsplit("/", 1)[-1] or "datei"
+        links = [mk_link(fname(u), random.randint(40, 300) * MB) for u in urls]
+        # Wie JD: mit Paketname ein Paket, sonst eigenes Paket pro Datei(-name)
+        if q.get("packageName"):
+            pkgs = [mk_package(q["packageName"], links)]
+        else:
+            pkgs = [mk_package(l["name"].rsplit(".", 1)[0], [l]) for l in links]
+        job = next(_ids)
         collect_until[0] = time.monotonic() + 2.5
-        pending.append((time.monotonic() + 2.0, mk_package(name, links)))
-        return {"id": next(_ids)}
+        pending.append((time.monotonic() + 2.0, pkgs, job))
+        return None if OLD_JD else {"id": job}
     if path == "/linkgrabberv2/addContainer":
         if len(args) < 2:
             raise ValueError("type und content erwartet")
         base64.b64decode(str(args[1]), validate=True)   # wirft bei ungültigem base64
-        links = [mk_link(f"Container.Film.part{i}.rar", 120 * MB) for i in range(1, 4)]
+        # JD verteilt den Inhalt einer DLC gern auf mehrere Pakete
+        pkgs = [mk_package(f"Container.Film.Teil{i}", [mk_link(f"Container.Film.Teil{i}.part{j}.rar", 60 * MB)
+                                                         for j in (1, 2)], archive=f"Container.Film.Teil{i}")
+                for i in (1, 2)]
+        pkgs.append(mk_package("Container.Film.Bonus", [mk_link("Container.Film.Bonus.mkv", 80 * MB)]))
+        job = next(_ids)
         collect_until[0] = time.monotonic() + 3.5
-        pending.append((time.monotonic() + 3.0, mk_package("Container.Film", links,
-                                                           archive="Container.Film")))
-        return {"id": next(_ids)}
+        pending.append((time.monotonic() + 3.0, pkgs, job))
+        return None if OLD_JD else {"id": job}
+    if path == "/linkgrabberv2/queryLinks":
+        q = args[0] if args and isinstance(args[0], dict) else {}
+        jobs = None if OLD_JD else (set(q["jobUUIDs"]) if q.get("jobUUIDs") else None)
+        pk = set(q["packageUUIDs"]) if q.get("packageUUIDs") else None
+        return [{"uuid": l["uuid"], "name": l["name"], "packageUUID": p["uuid"], "bytesTotal": l["size"],
+                 "host": l["host"]}
+                for p in grabber for l in p["links"]
+                if (jobs is None or l.get("job") in jobs) and (pk is None or p["uuid"] in pk)]
+    if path == "/linkgrabberv2/queryLinkCrawlerJobs":
+        if OLD_JD:
+            raise KeyError(path)
+        q = args[0] if args and isinstance(args[0], dict) else {}
+        ids = set(q.get("jobIds") or [])
+        return [{"jobId": j, "crawling": True, "checking": False, "crawled": 0}
+                for (_, _, j) in pending if j in ids]
+    if path == "/linkgrabberv2/renamePackage":
+        for p in grabber:
+            if p["uuid"] == args[0]:
+                p["name"] = args[1]
+        return None
+    if path == "/linkgrabberv2/movetoNewPackage":
+        if OLD_JD:
+            raise KeyError(path)
+        link_ids, pkg_ids = set(args[0] or []), set(args[1] or [])
+        name, directory = args[2], args[3] if len(args) > 3 else ""
+        if not isinstance(name, str) or not name:
+            raise ValueError(f"Name ungültig: {name!r}")
+        moved = []
+        for p in grabber:
+            take = [l for l in p["links"] if l["uuid"] in link_ids or p["uuid"] in pkg_ids]
+            p["links"] = [l for l in p["links"] if l not in take]
+            moved += take
+        grabber[:] = [p for p in grabber if p["links"]]
+        new = mk_package(name, moved, archive=name)
+        if directory:
+            new["saveTo"] = directory
+        grabber.append(new)
+        return None
     if path == "/linkgrabberv2/moveToDownloadlist":
         ids = set(args[1] if len(args) > 1 else [])
         for p in [p for p in grabber if p["uuid"] in ids]:

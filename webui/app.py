@@ -441,7 +441,7 @@ def build_overview():
 
     if not res["state"]["ok"]:
         return {"ok": True, "connected": False, "error": res["state"]["error"],
-                "notices": notices, "cnl": cnl_info, "categories": CATEGORY_LIST, "fallbackDir": FALLBACK_DIR,
+                "notices": notices, "cnl": cnl_info, "categories": CATEGORY_LIST, "fallbackDir": FALLBACK_DIR, "intake": _intake_pending(),
                 "auth": bool(WEBUI_USER)}
 
     state = str(res["state"]["data"] or "").upper()
@@ -472,7 +472,7 @@ def build_overview():
         "grabber": {"packages": len(grabber),
                     "links": sum(g.get("childCount") or 0 for g in grabber),
                     "list": [_grabber_view(g) for g in grabber]},
-        "categories": CATEGORY_LIST, "fallbackDir": FALLBACK_DIR,
+        "categories": CATEGORY_LIST, "fallbackDir": FALLBACK_DIR, "intake": _intake_pending(),
         "auth": bool(WEBUI_USER),
         "warning": errors[0] if errors else None,
         "notices": notices,
@@ -522,10 +522,6 @@ def _grabber_map():
     return {p.get("uuid"): p for p in jdapi.as_list(jdapi.grabber_packages())}
 
 
-def _grabber_uuids():
-    return set(_grabber_map())
-
-
 def _category_arg(value):
     """Kategorie aus dem Formular: leer = keine, unbekannt = Fehler (None, Fehlertext)."""
     value = str(value or "").strip()
@@ -534,100 +530,219 @@ def _category_arg(value):
     return value or None, None
 
 
-# Alles, was kurz nacheinander hinzugefügt wird (z. B. mehrere DLCs), landet in einem
-# gemeinsamen "Batch". Ein Worker wartet, bis JD fertig gesammelt hat, und schiebt alle
-# neuen Linkgrabber-Pakete in die Download-Liste. Einzelne Pakete lassen sich nicht
-# zuverlässig einem Upload zuordnen - daher eine gemeinsame Meldung pro Batch.
-# Mit Kategorie bekommen die Pakete vorher ihren Ordner. Kommen in einen laufenden Batch
-# Pakete mit anderer Kategorie, bleibt der Rest im Linkgrabber (dort zuordnen), damit
-# nichts im falschen Ordner landet.
-_batch = None
-_batch_lock = threading.Lock()
+# ── Eingang: alles aus einem Hinzufügen-Vorgang wird EIN Paket ────────────────
+# JD verteilt die Links einer DLC / eines Click'n'Load gern auf viele Pakete (eins pro
+# Datei). Jeder Vorgang (DLC-Upload, URL-Formular, CNL) wird deshalb gemerkt: Sobald JD
+# fertig gesammelt hat, kommen alle seine Links in ein Paket mit dem Namen der DLC bzw.
+# des CNL-Pakets und dem passenden Ordner (Kategorie oder FALLBACK_DIR/<Name>).
+# Zuordnung über die Job-ID von JD (queryLinks mit jobUUIDs); kann JD das nicht, über
+# den Vergleich mit dem Stand vor dem Hinzufügen.
 SETTLE_SECONDS = 3.0
+_intake = deque()
+_intake_lock = threading.Lock()
+_intake_state = {"busy": False, "current": None}
+_claimed = set()      # Link-IDs, die schon einem Vorgang zugeordnet wurden (nur Fallback)
 
 
-def _queue_confirm(before, autostart, label, category=None):
-    global _batch
-    with _batch_lock:
-        if _batch is None:
-            _batch = {"before": before, "autostart": autostart, "labels": [label],
-                      "last_add": time.monotonic(), "category": category, "conflict": False}
-            threading.Thread(target=_confirm_worker, daemon=True).start()
-        else:
-            _batch["autostart"] = _batch["autostart"] or autostart
-            _batch["labels"].append(label)
-            _batch["last_add"] = time.monotonic()
-            if category != _batch["category"]:
-                _batch["conflict"] = True
+def _grabber_link_list(job_ids=None):
+    return jdapi.as_list(jdapi.grabber_links(job_ids))
 
 
-def _confirm_worker():
-    global _batch
-    moved, quiet, error = set(), 0, None
+def _intake_pending():
+    with _intake_lock:
+        return len(_intake) + (1 if _intake_state["current"] else 0)
+
+
+def _intake_add(add_fn, label, name=None, category=None, mode="grabber", from_file=False):
+    """Führt den JD-Aufruf add_fn() aus und reiht den Vorgang ein. Liefert das JD-Ergebnis."""
+    before = {l.get("uuid") for l in _grabber_link_list()}
+    r = add_fn()
+    if not r["ok"]:
+        return r
+    data = r.get("data")
+    job_id = data.get("id") if isinstance(data, dict) and isinstance(data.get("id"), int) else None
+    job = {"label": label, "name": (name or "").strip(), "category": category, "mode": mode,
+           "from_file": from_file, "job_id": job_id, "before": before, "t": time.monotonic()}
+    with _intake_lock:
+        _intake.append(job)
+        start = not _intake_state["busy"]
+        _intake_state["busy"] = True
+    if start:
+        threading.Thread(target=_intake_worker, daemon=True).start()
+    return r
+
+
+def _intake_worker():
+    while True:
+        with _intake_lock:
+            if not _intake:
+                _intake_state.update(busy=False, current=None)
+                return
+            job = _intake.popleft()
+            _intake_state["current"] = job
+        try:
+            _process_job(job)
+        except Exception:  # noqa: BLE001 - Worker darf nicht sterben
+            log.exception("Fehler beim Verarbeiten von %s", job["label"])
+            notice("err", f"{job['label']}: interner Fehler beim Zusammenfassen")
+        with _intake_lock:
+            _intake_state["current"] = None
+        invalidate()
+
+
+def _job_links(job):
+    """Links dieses Vorgangs. Mit Job-Filter von JD exakt, sonst alles Neue seit dem
+    Hinzufügen (nur eindeutig, solange nichts anderes gleichzeitig hinzukommt)."""
+    if job["job_id"] is not None:
+        r = jdapi.grabber_links([job["job_id"]])
+        mine = jdapi.as_list(r)
+        # Ignoriert JD den Filter, kämen auch alte Links zurück -> dann Vergleich
+        if r["ok"] and not any(l.get("uuid") in job["before"] for l in mine):
+            if mine:
+                return mine
+            with _intake_lock:
+                alone = not _intake
+            if not alone:
+                return []   # weitere Vorgänge warten - der Vergleich wäre nicht eindeutig
+    all_links = _grabber_link_list()
+    _claimed.intersection_update(l.get("uuid") for l in all_links)
+    return [l for l in all_links
+            if l.get("uuid") not in job["before"] and l.get("uuid") not in _claimed]
+
+
+def _job_crawling(job):
+    if job["job_id"] is not None:
+        r = jdapi.crawler_jobs([job["job_id"]])
+        if r["ok"] and isinstance(r["data"], list):
+            return any(j.get("crawling") for j in r["data"] if isinstance(j, dict))
+    return jdapi.is_collecting()
+
+
+_SEP = " ._-"
+
+
+def _common_name(names):
+    """Gemeinsamer Anfang der Paketnamen, an einer Trennstelle abgeschnitten."""
+    names = [n for n in names if n]
+    if not names:
+        return ""
+    if len(names) == 1:
+        return names[0]
+    pre = os.path.commonprefix(names)
+    cut_mid_word = pre and pre[-1].isalnum() and any(len(n) > len(pre) and n[len(pre)].isalnum() for n in names)
+    if cut_mid_word:
+        m = re.match(r"^(.*[ ._-])", pre)
+        pre = m.group(1) if m else ""
+    pre = pre.strip(_SEP)
+    return pre if len(pre) >= 3 else names[0]
+
+
+def _looks_like_id(stem):
+    """DLC-Namen wie "C3A52F7E1B" (filecrypt) sagen nichts - dann lieber den Dateinamen."""
+    return bool(re.fullmatch(r"[A-Z0-9]{8,}|[a-f0-9]{8,}", stem)) and len(re.findall(r"\d", stem)) >= 2
+
+
+def _job_name(job, pkg_names):
+    derived = _common_name(pkg_names)
+    name = job["name"]
+    if name and job["from_file"] and _looks_like_id(name) and len(derived) >= 3:
+        name = derived
+    name = (name or derived or job["label"]).strip().lstrip("\"'").strip()
+    return "Paket" if not name or name.lower() == "null" else name[:200]
+
+
+def _process_job(job):
+    # 1. Warten, bis JD alle Links dieses Vorgangs gesammelt hat
+    deadline = job["t"] + CONFIRM_TIMEOUT
+    last, links, seen, empty = None, [], False, 0
     while True:
         time.sleep(1.5)
-        with _batch_lock:
-            before, last_add = _batch["before"], _batch["last_add"]
-            category, conflict = _batch["category"], _batch["conflict"]
-        if conflict:
-            with _batch_lock:
-                batch, _batch = _batch, None
+        links = _job_links(job)
+        ids = frozenset(l.get("uuid") for l in links)
+        settled = time.monotonic() - job["t"] >= SETTLE_SECONDS
+        crawling = _job_crawling(job)
+        if ids:
+            seen = True
+            if ids == last and settled and crawling is not True:
+                break
+        elif seen:
+            break               # schon übernommen oder entfernt (z. B. von Hand)
+        elif settled and crawling is not True:
+            empty += 1
+            if empty >= 2:
+                break           # JD ist fertig, aber nichts kam an
+        last = ids
+        if time.monotonic() > deadline:
             break
-        collecting = jdapi.is_collecting()
-        pkgs = _grabber_map()
-        fresh = set(pkgs) - before - moved
-        if fresh and collecting is not True:
-            r = {"ok": True}
-            err = _apply_dirs([pkgs[u] for u in fresh], category)
-            if err:
-                r = {"ok": False, "error": err}
-            if r["ok"]:
-                r = jdapi.grabber_to_downloads(fresh)
-            if not r["ok"]:
-                error = r["error"]
-            else:
-                moved |= fresh
-                quiet = 0
-                invalidate()
-                continue
-        idle = time.monotonic() - last_add
-        if error is None and idle < CONFIRM_TIMEOUT:
-            if not moved or collecting is True or idle < SETTLE_SECONDS:
-                continue
-            quiet += 1
-            if quiet < 2:
-                continue
-        # Beenden - unter dem Lock prüfen, dass nicht gerade noch etwas dazukam
-        with _batch_lock:
-            if error is None and not _batch["conflict"] and _batch["last_add"] != last_add:
-                quiet = 0
-                continue
-            batch, _batch = _batch, None
-            break
+    if not links:
+        if seen:
+            log.info("%s: Links schon übernommen/entfernt - nichts zusammenzufassen", job["label"])
+        else:
+            notice("warn", f"{job['label']}: Keine Links gefunden (offline oder Datei ungültig?).")
+        return
+    link_ids = [l.get("uuid") for l in links]
+    _claimed.update(link_ids)
 
-    labels = batch["labels"]
-    label = ", ".join(labels[:3]) + (f" (+{len(labels) - 3})" if len(labels) > 3 else "")
+    # 2. Name und Ordner
+    pkgs = _grabber_map()
+    pkg_ids = list(dict.fromkeys(l.get("packageUUID") for l in links))
+    involved = [pkgs[p] for p in pkg_ids if p in pkgs]
+    name = _job_name(job, [p.get("name") for p in involved])
+    single = len(involved) == 1 and involved[0].get("childCount") == len(link_ids)
+    category = job["category"]
+    # Hat jemand in der Zwischenzeit schon eine Kategorie gewählt, gilt die
+    chosen = next((p for p in involved if _category_of(p.get("saveTo"))), None)
+    if category:
+        target = _category_dir(category, name)
+    elif chosen:
+        category = _category_of(chosen.get("saveTo"))
+        target = chosen.get("saveTo") if single else _category_dir(category, name)
+    elif FALLBACK_DIR:
+        target = _fallback_dir(name)
+    else:
+        target = next((p.get("saveTo") for p in involved if p.get("saveTo")), "")
+
+    # 3. Ein Paket: nur Name/Ordner angleichen (Paket-ID bleibt). Mehrere: zusammenfassen.
+    final_pkgs = set(pkg_ids)
+    if single:
+        pkg = involved[0]
+        if pkg.get("name") != name:
+            jdapi.grabber_rename(pkg.get("uuid"), name)
+        if target and (pkg.get("saveTo") or "") != target:
+            r = jdapi.grabber_set_directory(target, [pkg.get("uuid")])
+            if not r["ok"]:
+                notice("err", f"{job['label']}: Ordner setzen fehlgeschlagen – {r['error']}")
+                return
+    else:
+        r = jdapi.grabber_new_package(link_ids, name, target)
+        if r["ok"]:
+            now = {l.get("uuid"): l.get("packageUUID") for l in _grabber_link_list()}
+            final_pkgs = {now[i] for i in link_ids if i in now} or final_pkgs
+            log.info("%s: %d Link(s) aus %d Paketen -> »%s« (%s)", job["label"], len(link_ids),
+                     len(pkg_ids), name, target or "JD-Standard")
+        else:
+            # Älteres JD ohne movetoNewPackage: wenigstens alles in denselben Ordner
+            log.warning("%s: Zusammenfassen nicht möglich (%s) - setze nur den Ordner", job["label"], r["error"])
+            if target:
+                for p in pkg_ids:
+                    jdapi.grabber_set_directory(target, [p])
     invalidate()
-    if error:
-        notice("err", f"{label}: Übernahme in die Downloads fehlgeschlagen – {error}")
+
+    # 4. Im Linkgrabber lassen oder übernehmen
+    n = len(link_ids)
+    what = f"{n} Link{'s' if n != 1 else ''} als »{name}«"
+    if job["mode"] == "grabber":
+        notice("ok", f"{job['label']}: {what} im Linkgrabber")
         return
-    if batch["conflict"]:
-        if moved and batch["autostart"]:
-            jdapi.start()
-        n = len(moved)
-        notice("warn", f"{label}: unterschiedliche Kategorien gleichzeitig hinzugefügt – "
-                       + (f"{n} Paket{'e' if n != 1 else ''} übernommen, " if n else "")
-                       + "der Rest wartet im Linkgrabber auf Zuordnung.")
+    r = jdapi.grabber_to_downloads(final_pkgs)
+    if not r["ok"]:
+        notice("err", f"{job['label']}: Übernahme in die Downloads fehlgeschlagen – {r['error']}")
         return
-    if not moved:
-        notice("warn", f"{label}: Keine neuen Pakete gefunden (Links offline oder Datei ungültig?).")
-        return
-    if batch["autostart"]:
+    if job["mode"] == "start":
         jdapi.start()
-    n = len(moved)
-    notice("ok", f"{label}: {n} Paket{'e' if n != 1 else ''} übernommen"
-                 + (f" ({batch['category']})" if batch["category"] else "")
-                 + (" und gestartet" if batch["autostart"] else ""))
+    notice("ok", f"{job['label']}: {what} übernommen"
+                 + (f" ({category})" if category else "")
+                 + (" und gestartet" if job["mode"] == "start" else ""))
 
 
 @app.post("/api/add/url")
@@ -643,13 +758,13 @@ def add_url():
     if err:
         return fail(err, 400)
 
-    before = _grabber_uuids()
-    r = jdapi.add_links(links, package_name, autostart=False, extract_password=password)
+    r = _intake_add(lambda: jdapi.add_links(links, package_name, autostart=False, extract_password=password),
+                    package_name or "Links", name=package_name, category=category,
+                    mode="start" if autostart else "queue")
     if not r["ok"]:
         return jsonify(r)
     count = len([l for l in links.splitlines() if l.strip()])
     log.info("URL hinzugefügt (%d Zeile(n))%s", count, f" -> {category}" if category else "")
-    _queue_confirm(before, autostart, package_name or "Links", category)
     invalidate()
     return jsonify({"ok": True, "message": "An JDownloader übergeben – Links werden geprüft …"})
 
@@ -674,13 +789,14 @@ def add_dlc():
     if err:
         return fail(err, 400)
 
-    before = _grabber_uuids()
-    r = jdapi.add_container(ctype, base64.b64encode(content).decode("ascii"))
+    stem = os.path.splitext(os.path.basename(f.filename.replace("\\", "/")))[0]
+    r = _intake_add(lambda: jdapi.add_container(ctype, base64.b64encode(content).decode("ascii")),
+                    f.filename, name=stem, category=category, mode="start" if autostart else "queue",
+                    from_file=True)
     if not r["ok"]:
         return jsonify(r)
     log.info("Container hinzugefügt: %s (%d Bytes)%s", f.filename, len(content),
              f" -> {category}" if category else "")
-    _queue_confirm(before, autostart, f.filename, category)
     invalidate()
     return jsonify({"ok": True, "message": f"{f.filename} an JDownloader übergeben – wird entschlüsselt …"})
 
@@ -807,31 +923,17 @@ def _cnl_failed(label, msg, links=0):
     return _cnl_text(f"failed {msg}\r\n")
 
 
-def _cnl_before():
-    # Linkgrabber-Stand vor dem Hinzufügen - nur nötig, wenn danach übernommen wird
-    return _grabber_uuids() if CNL_ACTION != "grabber" else set()
-
-
-def _cnl_followup(before, label, what):
-    if CNL_ACTION == "grabber":
-        notice("ok", f"{label}: {what} im Linkgrabber")
-    else:
-        _queue_confirm(before, CNL_ACTION == "start", label)
-    invalidate()
-
-
 def _cnl_add_links(label, text):
     links = cnl.count_links(text)
     package = (request.values.get("package") or "").strip()
     password = cnl.first_password(request.values.get("passwords"))
-    before = _cnl_before()
-    r = jdapi.add_links(text, package, autostart=False, extract_password=password)
+    r = _intake_add(lambda: jdapi.add_links(text, package, autostart=False, extract_password=password),
+                    f"Click'n'Load ({package or label})", name=package, mode=CNL_ACTION)
     if not r["ok"]:
         return _cnl_failed(label, r["error"], links)
     log.info("Click'n'Load von %s (%s): %d Link(s) an JD übergeben", label, request.remote_addr, links)
     _cnl_record(label, links, True)
-    _cnl_followup(before, f"Click'n'Load ({package or label})",
-                  f"{links} Link{'s' if links != 1 else ''}")
+    invalidate()
     return _cnl_text("success\r\n")
 
 
@@ -888,13 +990,13 @@ def cnl_addcrypted():
     content = (request.values.get("crypted") or "").strip()
     if not content:
         return _cnl_failed(label, "keine Daten übermittelt (crypted fehlt)")
-    before = _cnl_before()
-    r = jdapi.add_container("DLC", base64.b64encode(content.encode()).decode("ascii"))
+    r = _intake_add(lambda: jdapi.add_container("DLC", base64.b64encode(content.encode()).decode("ascii")),
+                    f"Click'n'Load ({label})", mode=CNL_ACTION)
     if not r["ok"]:
         return _cnl_failed(label, r["error"])
     log.info("Click'n'Load (DLC) von %s (%s) an JD übergeben", label, request.remote_addr)
     _cnl_record(label, 0, True, "DLC")
-    _cnl_followup(before, f"Click'n'Load ({label})", "DLC")
+    invalidate()
     return _cnl_text("success\r\n")
 
 

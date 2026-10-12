@@ -191,6 +191,30 @@ def grabber_packages():
     return call("/linkcollector/queryPackages", {"maxResults": -1, "startAt": 0})
 
 
+def grabber_links(job_ids=None):
+    """Links im Linkgrabber (uuid, name, packageUUID ...), optional nur aus bestimmten
+    Hinzufügen-Vorgängen (Job-ID aus addLinks/addContainer)."""
+    q = {"maxResults": -1, "startAt": 0}
+    if job_ids:
+        q["jobUUIDs"] = list(job_ids)
+    return call("/linkgrabberv2/queryLinks", q)
+
+
+def crawler_jobs(job_ids):
+    """Status der Crawler-Jobs: [{jobId, crawling, checking, ...}] - leer, wenn fertig."""
+    return call("/linkgrabberv2/queryLinkCrawlerJobs", {"jobIds": list(job_ids), "collectorInfo": True})
+
+
+def grabber_new_package(link_ids, name, directory):
+    """Links in ein neues Paket mit Name und Download-Ordner verschieben (leere Pakete
+    entfernt JD selbst). Name/Ordner gehen roh mit, siehe grabber_set_directory."""
+    return call("/linkgrabberv2/movetoNewPackage", list(link_ids), [], name, directory)
+
+
+def grabber_rename(package_id, name):
+    return call("/linkgrabberv2/renamePackage", package_id, name)
+
+
 def grabber_set_directory(directory, package_ids):
     """Download-Ordner von Linkgrabber-Paketen setzen (Pfad im JDownloader-Container).
     Strings gehen roh als Parameter mit (wie bei addContainer); der Aufrufer sorgt dafür,
