@@ -6,6 +6,10 @@ Simuliert die lokale JD-API auf Port 3128: Download-Fortschritt, Pause,
 Entpack-Warteschlange und Linkgrabber (addLinks/addContainer).
 
     python dev/mock_jd.py            # lauscht auf 127.0.0.1:3128
+
+Mit MOCK_FILES=1 legt der Mock die Dateien wirklich an (fertige Links im Download-Ordner,
+nach dem Entpacken <Archiv>.mkv im Entpack-Ziel, Archive danach gelöscht, wenn so
+eingestellt). Damit lässt sich die Zwischenablage (STAGING_DIR) lokal durchspielen.
 """
 
 import base64
@@ -34,6 +38,19 @@ collect_until = [0.0]  # isCollecting == True bis zu diesem Zeitpunkt
 pending = []           # (fällig_ab, [pakete], job_id) - kommt nach dem "Sammeln" in den Linkgrabber
 # Wie ältere JD-Versionen: kein Job-Filter bei queryLinks, keine Crawler-Jobs, kein movetoNewPackage
 OLD_JD = os.environ.get("MOCK_OLD_JD") == "1"
+FILES = os.environ.get("MOCK_FILES") == "1"
+
+
+def write_file(directory, name, size=1024):
+    """Nur mit MOCK_FILES=1: Datei wirklich anlegen (klein, Inhalt egal)."""
+    if not FILES:
+        return
+    try:
+        os.makedirs(directory, exist_ok=True)
+        with open(os.path.join(directory, name), "wb") as fh:
+            fh.write(b"x" * size)
+    except OSError as e:
+        print(f"[mock-jd] Datei {directory}/{name} nicht angelegt: {e}", flush=True)
 
 
 def mk_link(name, size, loaded=0, finished=False, extraction=None):
@@ -45,7 +62,7 @@ def mk_link(name, size, loaded=0, finished=False, extraction=None):
 def mk_package(name, links, extract=None, archive=None):
     return {"uuid": next(_ids), "name": name, "links": links, "enabled": True,
             "extract": extract, "extractPct": 0.0, "archive": archive or name,
-            "saveTo": "/output", "forced": False}
+            "saveTo": "/output", "forced": False, "extractPath": None, "removeFiles": None}
 
 
 def seed():
@@ -99,6 +116,7 @@ def tick():
                 l["loaded"] = min(l["size"], l["loaded"] + speed * dt)
             if l["loaded"] >= l["size"]:
                 l["finished"], l["running"] = True, False
+                write_file(pkg["saveTo"], l["name"])
         if pkg.get("forced") and all(l["finished"] for l in pkg["links"]):
             pkg["forced"] = False
         if pkg["extract"] is None and all(l["finished"] for l in pkg["links"]):
@@ -119,6 +137,15 @@ def tick():
             pkg["extract"] = "done"
             for l in pkg["links"]:
                 l["extractionStatus"] = "SUCCESSFUL"
+            if FILES:
+                write_file(pkg["extractPath"] or pkg["saveTo"], f"{pkg['archive']}.mkv")
+                if pkg["removeFiles"]:
+                    for l in pkg["links"]:
+                        if l["name"].endswith((".rar", ".zip", ".7z")):
+                            try:
+                                os.unlink(os.path.join(pkg["saveTo"], l["name"]))
+                            except OSError:
+                                pass
 
     if state["controller"] == "RUNNING" and not any(
             not l["finished"] for p in packages for l in p["links"] if p["enabled"]):
@@ -224,6 +251,24 @@ def handle(path, args):
                  "controllerId": p["uuid"],
                  "states": {l["name"]: "QUEUED" for l in p["links"]}}
                 for p in packages if p["extract"] in ("queued", "running")]
+    if path == "/extraction/getArchiveInfo":
+        ids = set(args[1] if len(args) > 1 else [])
+        return [{"archiveId": f"A{p['uuid']}", "archiveName": p["archive"], "controllerStatus": "NA",
+                 "type": "RAR", "states": {l["name"]: "COMPLETE" if l["finished"] else "INCOMPLETE"
+                                           for l in p["links"]}}
+                for p in packages if p["uuid"] in ids and is_archive(p)]
+    if path == "/extraction/setArchiveSettings":
+        aid, settings = str(args[0]), args[1] if len(args) > 1 else {}
+        if not isinstance(settings, dict):
+            raise ValueError(f"Einstellungen ungültig: {settings!r}")
+        for p in packages:
+            if f"A{p['uuid']}" == aid:
+                if settings.get("extractPath") is not None:
+                    p["extractPath"] = settings["extractPath"]
+                if settings.get("removeFilesAfterExtraction") is not None:
+                    p["removeFiles"] = bool(settings["removeFilesAfterExtraction"])
+                return True
+        raise ValueError(f"Archiv {aid} unbekannt")
     if path == "/linkgrabberv2/isCollecting":
         return time.monotonic() < collect_until[0]
     if path == "/linkgrabberv2/queryPackages":
@@ -266,7 +311,8 @@ def handle(path, args):
         pkgs = [mk_package(f"Container.Film.Teil{i}", [mk_link(f"Container.Film.Teil{i}.part{j}.rar", 60 * MB)
                                                          for j in (1, 2)], archive=f"Container.Film.Teil{i}")
                 for i in (1, 2)]
-        pkgs.append(mk_package("Container.Film.Bonus", [mk_link("Container.Film.Bonus.mkv", 80 * MB)]))
+        pkgs.append(mk_package("Container.Film.Bonus", [mk_link("Container.Film.Bonus.mkv", 80 * MB),
+                                                         mk_link("Container.Film.sfv", 1024)]))
         job = next(_ids)
         collect_until[0] = time.monotonic() + 3.5
         pending.append((time.monotonic() + 3.0, pkgs, job))

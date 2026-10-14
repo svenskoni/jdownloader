@@ -15,7 +15,8 @@ Portainer-Stack aus drei Teilen:
 - Anzeige **„Aktuell“**, also was JD gerade macht, z. B. „Lädt 2 Dateien · Entpackt »Film«“, dazu der Gesamtfortschritt
 - Pro Paket: Phase (Download / Entpacken / Entpacken wartet / Fertig / Fehler), Fortschritt in %, Größe, Geschwindigkeit, Restzeit und der Statustext von JD
 - Pakete aus der Liste entfernen und „Fertige entfernen“ (die Dateien bleiben dabei immer erhalten)
-- **Linkgrabber** mit **Kategorien** (Anime, Filme, Serien, Spiele): pro Paket Kategorie wählen und übernehmen – die Dateien landen direkt im passenden Ordner (siehe [Kategorien](#6-kategorien))
+- **Zwischenablage auf der SSD**: alles wird erst auf die SSD geladen, JD entpackt direkt ins Ziel auf der HDD, danach verschiebt die WebUI den Rest und räumt die SSD auf (siehe [Download-Ordner](#5-download-ordner-ssd--hdd))
+- **Linkgrabber** mit **Kategorien** (Anime, Filme, Serien, Spiele): pro Paket Kategorie wählen und übernehmen – die fertigen Dateien landen im passenden Ordner (siehe [Kategorien](#6-kategorien))
 - **Click'n'Load** von Download-Seiten annehmen (siehe [Click'n'Load](#clicknload))
 - Anmeldeseite mit **„Angemeldet bleiben“** (Cookie, Standard 365 Tage)
 
@@ -63,6 +64,9 @@ Die JD-Konfiguration unter `/opt/jdownloader/config` bleibt erhalten.
 | `SESSION_DAYS` | optional, so viele Tage bleibt ein Browser nach „Angemeldet bleiben“ angemeldet, Standard `365` |
 | `CATEGORIES` | optional, eigene Kategorien, siehe [Kategorien](#6-kategorien) |
 | `FALLBACK_DIR` | optional, wohin Pakete ohne Kategorie gehen, Standard `/fertig` (= `Fertig` auf der HDD) |
+| `STAGING_DIR` | optional, Zwischenablage (SSD), Standard `/output`. Leer = wie früher direkt ins Ziel laden, siehe [Download-Ordner](#5-download-ordner-ssd--hdd) |
+| `POST_INTERVAL` | optional, alle wie viele Sekunden die WebUI nach fertigen Paketen schaut, Standard `20` |
+| `STAGING_JUNK` | optional, Endungen, die beim Verschieben gelöscht statt mitgenommen werden, Standard `.sfv,.par2,.md5,.sha1,.nfo,.url` |
 
 Danach auf **Deploy the stack** klicken. Beim ersten Mal baut Portainer das WebUI-Image, das dauert etwa eine Minute.
 
@@ -76,23 +80,42 @@ Optional kannst du die API direkt testen (Konsole des `jd-webui`-Containers in P
 wget -qO- http://jdownloader:3128/jd/version
 ```
 
-### 5. Download-Ordner (HDD)
-Die Downloads liegen auf der Daten-HDD des Docker-Hosts, die dort unter `/mnt/data_disk` eingehängt ist:
+### 5. Download-Ordner (SSD → HDD)
+Damit die Daten-HDD möglichst selten anläuft, lädt JD alles zuerst auf eine SSD (Zwischenablage). Erst beim Entpacken bzw. Verschieben wird auf die HDD geschrieben.
 
 | Auf dem Host | Im Container | Zweck |
 |---|---|---|
-| `/mnt/data_disk/Download` | `/output` | Standard-Ordner von JD, nur für Pakete, die nicht über die WebUI übernommen werden |
-| `/mnt/data_disk/Fertig` | `/fertig` | Pakete ohne Kategorie, je Paket ein Unterordner (`FALLBACK_DIR`) |
-| `/mnt/data_disk/Medien` | `/medien` | Kategorien Anime, Filme, Serien (`/medien/Anime` …) |
-| `/mnt/data_disk/Spiele` | `/spiele` | Kategorie Spiele |
+| `/mnt/ssd/Download` | `/output` | **SSD**: Zwischenablage, je Paket ein Unterordner (`STAGING_DIR`), außerdem Standard-Ordner von JD |
+| `/mnt/data_disk/Fertig` | `/fertig` | HDD: Pakete ohne Kategorie, je Paket ein Unterordner (`FALLBACK_DIR`) |
+| `/mnt/data_disk/Medien` | `/medien` | HDD: Kategorien Anime, Filme, Serien (`/medien/Anime` …) |
+| `/mnt/data_disk/Spiele` | `/spiele` | HDD: Kategorie Spiele |
 
-Einmalig in der JD-GUI (Port 5800) prüfen:
-- *Einstellungen → Allgemein*: Download-Ordner `/output`.
-- *Einstellungen → Archiv-Entpacker*: **„Entpacken nach“ ausschalten**, also im Ordner des Archivs entpacken. Sonst landet alles Entpackte in einem festen Ordner statt in der Kategorie. Pakete ohne Kategorie landen trotzdem in `Fertig`, weil die WebUI sie dorthin lädt. Dazu „Archive nach erfolgreichem Entpacken löschen“ einschalten, dann bleiben in den Medien-Ordnern nur die fertigen Dateien.
+`jdownloader` **und** `jd-webui` brauchen diese Volumes mit **denselben Pfaden im Container**: JD lädt und entpackt, die WebUI verschiebt und räumt auf.
 
-Der JD-Container schreibt als UID 1000. Die Ordner `Medien/*` und `Spiele` müssen für diesen Benutzer beschreibbar sein (`ls -ln /mnt/data_disk /mnt/data_disk/Medien` zeigt Besitzer und Rechte).
+**Ablauf pro Paket:**
+1. Beim Übernehmen setzt die WebUI den Download-Ordner auf `/output/<Paket>` (SSD) und merkt sich das Ziel (Kategorie-Ordner oder `/fertig/<Paket>`) in `/output/.jd-webui-ziele.json`. Haben zwei Pakete denselben Namen, bekommt das zweite `/output/<Paket> (2)`.
+2. Sobald das Paket in der Download-Liste ist, setzt sie für seine Archive „Entpacken nach“ = Ziel. JD entpackt also direkt auf die HDD und löscht die Archive danach von der SSD.
+3. Ist alles geladen und entpackt, verschiebt sie die übrigen Dateien (z. B. eine einzelne `.mkv` ohne Archiv) ins Ziel, löscht Archivreste und `STAGING_JUNK` (`.sfv`, `.nfo` …), entfernt den Ordner auf der SSD und nimmt das Paket aus der Download-Liste (nur aus der Liste). Vorhandene Dateien im Ziel werden nie überschrieben, sondern bekommen ` (1)` angehängt.
+4. In der Oberfläche steht dabei „Fertig · wartet aufs Entpacken“, „Fertig · wird gleich verschoben“ bzw. „Verschiebt ins Ziel“, danach eine Meldung „»Paket« fertig in …“.
 
-Die HDD muss eingehängt sein, bevor der Stack startet. Fehlt sie, legt Docker die Ordner leer auf der Systemplatte an und JD lädt dorthin.
+Auch Pakete, die du direkt in der JD-GUI in einen Unterordner von `/output` lädst, verschiebt die WebUI, und zwar wie Pakete ohne Kategorie nach `/fertig/<Ordner>`. Was direkt in `/output` (ohne Unterordner) liegt, fasst sie nicht an.
+
+Einmalig in der JD-GUI (Port 5800) einstellen:
+
+| Einstellung | Wert | Warum |
+|---|---|---|
+| *Allgemein → Download-Ordner* | `/output` | Standard für alles, was nicht über die WebUI kommt |
+| *Allgemein → Fertige Downloads aus der Liste entfernen* | **Nie** | Die WebUI muss fertige Pakete noch sehen, um sie zu verschieben. Sie räumt die Liste danach selbst auf. |
+| *Archiv-Entpacker → Entpacken nach (eigener Ordner)* | **aus** | Ein fester Ordner kennt keine Kategorien. Das Ziel setzt die WebUI pro Archiv. |
+| *Archiv-Entpacker → Unterordner erstellen* | **aus** | Den Ordner pro Paket legt schon die WebUI an, sonst entsteht `…/Name/Name/`. |
+| *Archiv-Entpacker → Archive nach erfolgreichem Entpacken löschen* | **an**, endgültig löschen | Die Archive verschwinden von der SSD, der Platz wird frei. |
+| *Archiv-Entpacker → Automatisch entpacken* | **an** | Ohne Entpacken bleibt ein Paket mit Archiven in der Zwischenablage liegen. |
+
+Der JD-Container und die WebUI schreiben als UID 1000. `/mnt/ssd/Download`, `Fertig`, `Medien/*` und `Spiele` müssen für diesen Benutzer beschreibbar sein (`ls -ln /mnt/ssd /mnt/data_disk /mnt/data_disk/Medien` zeigt Besitzer und Rechte).
+
+SSD und HDD müssen eingehängt sein, bevor der Stack startet. Fehlt eine, legt Docker die Ordner leer auf der Systemplatte an und JD lädt dorthin.
+
+Ohne SSD: `STAGING_DIR` in Portainer leer setzen und `/output` wieder auf die HDD legen. Dann lädt JD wie früher direkt ins Ziel.
 
 ### 6. Kategorien
 Im Linkgrabber hat jedes Paket Knöpfe für die Kategorien. Ein Klick wählt die Kategorie und öffnet darunter das Feld für den **Ordnernamen**, vorbelegt mit dem Paketnamen und markiert, sodass du direkt lostippen kannst. Enter oder Klick daneben speichert, „Übernehmen“ nimmt den eingetippten Namen auch ohne Enter mit. Ergebnis z. B. `/medien/Anime/<Name>` (= `/mnt/data_disk/Medien/Anime/<Name>` auf dem Host). Verschachtelt geht auch (`Frieren/Staffel 1`). Ein leeres Feld bedeutet den Paketnamen, lose Dateien direkt im Kategorie-Ordner gibt es nicht. Nochmal auf die aktive Kategorie klicken wählt sie wieder ab.
@@ -170,6 +193,15 @@ Die WebUI liest den Schlüssel aus der `jk`-Funktion der Seite ohne JavaScript-I
    - `RemoteAPI: Deprecated Api Port` → **3128**
 3. Danach JD neu starten (Container `jdownloader` neu starten).
 
+**Paket bleibt auf der SSD liegen (Zwischenablage)**
+- Log von `jd-webui` ansehen, die Zeilen beginnen mit „Zwischenablage“, „Entpacken:“ oder dem Paketnamen.
+- „Entpacken fehlgeschlagen“: falsches/fehlendes Passwort oder defektes Archiv. Nach dem Entpacken in JD (Rechtsklick → Entpacken) verschiebt die WebUI das Paket von selbst.
+- „wartet aufs Entpacken“ hält an: In JD ist *Automatisch entpacken* aus, oder JD hat das Archiv noch nicht erkannt.
+- „Verschieben … fehlgeschlagen“: meist Rechte oder volle HDD. Neuer Versuch nach 10 Minuten.
+- `STAGING_DIR … Zwischenablage AUS` beim Start: Das Volume `/output` fehlt bei `jd-webui` oder ist nicht beschreibbar.
+- `JD kennt extraction/getArchiveInfo nicht`: Ältere JD-Version. Dann entpackt JD auf der SSD, und die WebUI verschiebt das Ergebnis danach ins Ziel (geht auch, braucht nur kurz mehr Platz auf der SSD).
+- Ein Paket, das du selbst aus der Liste entfernst, verschiebt die WebUI nicht mehr. Seine Dateien liegen dann unter `/mnt/ssd/Download/<Paket>`.
+
 **Andere USER_ID/GROUP_ID als 1000**
 Passe bei `jd-init` die Zeile `user: "1000:1000"` an, sonst darf das Init-Skript die JD-Config nicht schreiben.
 
@@ -202,7 +234,7 @@ pip install flask
 python dev/mock_jd.py                     # Fake-JDownloader auf Port 3128 (simuliert Download/Entpacken)
 JD_API_URL=http://127.0.0.1:3128 WEBUI_USER=admin WEBUI_PASS=test WEB_PORT=8091 python app.py
 ```
-Danach im Browser `http://127.0.0.1:8091` öffnen. Mit `MOCK_SPEED_MB=40` simuliert der Mock schnellere Downloads. Der Click'n'Load-Empfänger lauscht dabei auf `127.0.0.1:9666` (anderer Port über `CNL_PORT`).
+Danach im Browser `http://127.0.0.1:8091` öffnen. Mit `MOCK_SPEED_MB=40` simuliert der Mock schnellere Downloads. Mit `MOCK_FILES=1` legt er die Dateien wirklich an (fertige Links, nach dem Entpacken `<Archiv>.mkv` im Entpack-Ziel). Zusammen mit `STAGING_DIR=/output POST_INTERVAL=5` lässt sich so die Zwischenablage durchspielen, die Ordner `/output`, `/medien/…`, `/spiele` und `/fertig` müssen dafür lokal existieren und beschreibbar sein. Der Click'n'Load-Empfänger lauscht dabei auf `127.0.0.1:9666` (anderer Port über `CNL_PORT`).
 
 ## Dateien
 ```
@@ -212,6 +244,7 @@ webui/app.py            Backend (Flask): Login, Übersicht, Steuerung, Hinzufüg
 webui/cnl.py            Click'n'Load: Schlüssel lesen, Links entschlüsseln, IP-Filter
 webui/jdapi.py          Client für die lokale JD-API
 webui/jd_init.py        Init-Skript: schaltet die JD-API in der Config frei
+webui/mover.py          Verschiebt fertige Pakete von der SSD ins Ziel (auch über Dateisystemgrenzen)
 webui/static/           Oberfläche (HTML/CSS/JS, keine externen Abhängigkeiten)
 webui/dev/mock_jd.py    Fake-JDownloader für lokale Tests (nicht im Image)
 extension/              Chrome-/Edge-Erweiterung für Click'n'Load (wird nicht ins Image gebaut)

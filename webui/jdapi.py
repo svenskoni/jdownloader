@@ -150,6 +150,17 @@ def extraction_queue():
     return call("/extraction/getQueue")
 
 
+def archive_info(package_ids):
+    """Archive der Pakete in der Download-Liste: [{archiveId, archiveName, states ...}]."""
+    return call("/extraction/getArchiveInfo", [], list(package_ids))
+
+
+def set_archive_settings(archive_id, settings):
+    """Einstellungen eines Archivs ändern. Nur gesetzte Felder zählen, z. B.
+    {"extractPath": "/medien/Filme/X", "removeFilesAfterExtraction": True}."""
+    return call("/extraction/setArchiveSettings", str(archive_id), settings)
+
+
 # ── Linkgrabber ───────────────────────────────────────────────────────────────
 
 def add_links(links, package_name="", autostart=False, extract_password=""):

@@ -37,7 +37,7 @@ services:
       - WEB_AUTHENTICATION_TOKEN_VALIDITY_TIME=8760   # JD-Oberfläche (5800): 1 Jahr angemeldet bleiben
     volumes:
       - /opt/jdownloader/config:/config:rw
-      - /mnt/data_disk/Download:/output:rw   # HDD: JD-Standardordner (nur was nicht über die WebUI übernommen wird)
+      - /mnt/ssd/Download:/output:rw         # SSD: Zwischenablage, alle Downloads landen zuerst hier (STAGING_DIR)
       - /mnt/data_disk/Fertig:/fertig:rw     # HDD: Pakete ohne Kategorie (FALLBACK_DIR)
       - /mnt/data_disk/Medien:/medien:rw     # HDD: Kategorien Anime/Filme/Serien (siehe CATEGORIES)
       - /mnt/data_disk/Spiele:/spiele:rw     # HDD: Kategorie Spiele
@@ -68,6 +68,16 @@ services:
       # Kategorien im Linkgrabber: Name=Ordner im jdownloader-Container (Volumes oben)
       - CATEGORIES=${CATEGORIES:-Anime=/medien/Anime;Filme=/medien/Filme;Serien=/medien/Serien;Spiele=/spiele}
       - FALLBACK_DIR=${FALLBACK_DIR-/fertig}   # Pakete ohne Kategorie: /fertig/<Paket> (leer = JD-Standardordner)
+      # Zwischenablage: erst nach /output/<Paket> (SSD) laden, JD entpackt direkt ins Ziel (HDD),
+      # danach verschiebt die WebUI den Rest und löscht den Ordner auf der SSD. Leer = direkt ins Ziel.
+      - STAGING_DIR=${STAGING_DIR-/output}
+      - POST_INTERVAL=${POST_INTERVAL:-20}     # Sekunden zwischen zwei Prüfungen auf fertige Pakete
+    # Gleiche Pfade wie bei jdownloader: die WebUI verschiebt fertige Pakete von /output ins Ziel
+    volumes:
+      - /mnt/ssd/Download:/output:rw
+      - /mnt/data_disk/Fertig:/fertig:rw
+      - /mnt/data_disk/Medien:/medien:rw
+      - /mnt/data_disk/Spiele:/spiele:rw
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
       interval: 30s

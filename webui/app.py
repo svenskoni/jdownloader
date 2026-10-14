@@ -17,6 +17,7 @@ import base64
 import hashlib
 import hmac
 import html
+import json
 import logging
 import os
 import re
@@ -29,6 +30,7 @@ from flask import Flask, Response, jsonify, redirect, request, send_from_directo
 
 import cnl
 import jdapi
+import mover
 
 WEBUI_USER = os.environ.get("WEBUI_USER", "")
 WEBUI_PASS = os.environ.get("WEBUI_PASS", "")
@@ -43,6 +45,16 @@ CATEGORIES_SPEC = os.environ.get(
     "CATEGORIES", "Anime=/medien/Anime;Filme=/medien/Filme;Serien=/medien/Serien;Spiele=/spiele")
 # Ohne Kategorie übernommene Pakete landen hier (mit Unterordner pro Paket), leer = JD-Standardordner
 FALLBACK_DIR = os.environ.get("FALLBACK_DIR", "/fertig").strip().rstrip("/")
+# Zwischenablage (z. B. SSD): Pakete werden erst nach STAGING_DIR/<Paket> geladen, JD entpackt
+# direkt ins Ziel (Kategorie / FALLBACK_DIR), danach verschiebt die WebUI den Rest dorthin und
+# räumt den Ordner auf. Leer = wie früher direkt ins Ziel laden.
+STAGING_DIR = os.environ.get("STAGING_DIR", "").strip().rstrip("/")
+# So oft (Sekunden) prüft die WebUI, ob Pakete in der Zwischenablage fertig sind
+POST_INTERVAL = max(5.0, float(os.environ.get("POST_INTERVAL", "20")))
+# Diese Dateien werden beim Verschieben gelöscht statt mitgenommen (Endungen, mit , getrennt)
+STAGING_JUNK = tuple(e.strip().lower() for e in
+                     os.environ.get("STAGING_JUNK", ".sfv,.par2,.md5,.sha1,.nfo,.url").split(",")
+                     if e.strip())
 
 # Click'n'Load: Port im Container (gunicorn bindet ihn, siehe Dockerfile)
 CNL_PORT = int(os.environ.get("CNL_PORT", "9666"))
@@ -274,6 +286,8 @@ def _under(path, base):
 
 
 def _category_of(save_to):
+    """Kategorie zu einem Ordner. Ordner in der Zwischenablage zählen mit ihrem Ziel."""
+    save_to = _resolve(save_to)
     for name, path in sorted(CATEGORIES.items(), key=lambda kv: -len(kv[1])):
         if _under(save_to, path):
             return name
@@ -295,7 +309,130 @@ def _fallback_dir(package_name):
 
 def _unsorted(save_to):
     """Weder Kategorie noch schon im Ordner für Pakete ohne Kategorie."""
+    save_to = _resolve(save_to)
     return _category_of(save_to) is None and not (FALLBACK_DIR and _under(save_to, FALLBACK_DIR))
+
+
+# ── Zwischenablage (SSD) ──────────────────────────────────────────────────────
+# Mit STAGING_DIR bekommt jedes Paket bei der Übernahme den Download-Ordner
+# STAGING_DIR/<Paket>. Das eigentliche Ziel (Kategorie-Ordner oder FALLBACK_DIR/<Paket>)
+# merkt sich die WebUI in einer kleinen JSON-Datei in STAGING_DIR (übersteht Neustarts).
+# Ein Hintergrund-Job setzt für die Archive des Pakets "Entpacken nach" = Ziel, damit JD
+# direkt auf die HDD entpackt. Ist alles fertig, verschiebt er die übrigen Dateien (z. B.
+# eine einzelne .mkv) ins Ziel, löscht Archivreste/Junk und den Ordner auf der SSD und
+# nimmt das Paket aus der Download-Liste (nur aus der Liste).
+
+_targets = {}               # Zwischenordner -> {"target": Ziel, "t": Zeitstempel}
+_targets_lock = threading.Lock()
+
+
+def _norm(path):
+    return (path or "").strip().rstrip("/")
+
+
+def _staging_on():
+    return bool(STAGING_DIR)
+
+
+def _staged(save_to):
+    """Liegt der Ordner in der Zwischenablage (Unterordner, nicht der Ordner selbst)?"""
+    st = _norm(save_to)
+    return _staging_on() and st != STAGING_DIR and _under(st, STAGING_DIR)
+
+
+def _targets_file():
+    return os.path.join(STAGING_DIR, ".jd-webui-ziele.json")
+
+
+def _targets_load():
+    try:
+        with open(_targets_file(), encoding="utf-8") as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        return
+    except (OSError, ValueError) as e:
+        log.warning("Zwischenablage: %s nicht lesbar (%s)", _targets_file(), e)
+        return
+    if not isinstance(data, dict):
+        log.warning("Zwischenablage: %s hat ein unerwartetes Format - ignoriert", _targets_file())
+        return
+    with _targets_lock:
+        for k, v in data.items():
+            if isinstance(v, dict) and isinstance(v.get("target"), str):
+                _targets[_norm(k)] = {"target": _norm(v["target"]), "t": float(v.get("t") or time.time())}
+
+
+def _targets_save_locked():
+    tmp = _targets_file() + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(_targets, fh, ensure_ascii=False, indent=1)
+        os.replace(tmp, _targets_file())
+    except OSError as e:
+        log.warning("Zwischenablage: Ziele nicht gespeichert (%s)", e)
+
+
+def _target_put(stage, target):
+    with _targets_lock:
+        _targets[_norm(stage)] = {"target": _norm(target), "t": time.time()}
+        _targets_save_locked()
+
+
+def _target_drop(stage):
+    with _targets_lock:
+        if _targets.pop(_norm(stage), None) is not None:
+            _targets_save_locked()
+
+
+def _target_of(stage):
+    with _targets_lock:
+        e = _targets.get(_norm(stage))
+    return e["target"] if e else None
+
+
+def _resolve(save_to):
+    """Ordner eines Pakets, wie ihn der Benutzer gewählt hat: bei Paketen in der
+    Zwischenablage deren Ziel, sonst der Ordner selbst."""
+    st = _norm(save_to)
+    if _staged(st):
+        return _target_of(st) or st
+    return st
+
+
+def _reserve_stage(name, target, current=None):
+    """Zwischenordner für ein Paket festlegen und das Ziel dazu merken. Liegt das Paket
+    schon in der Zwischenablage, bleibt sein Ordner (nur das Ziel ändert sich). Sonst
+    Paketname, bei Kollision mit Zähler: zwei Pakete teilen sich nie einen Ordner."""
+    cur, target = _norm(current), _norm(target)
+    with _targets_lock:
+        if _staged(cur) and cur in _targets:
+            stage = cur
+        else:
+            base = _folder_name(name) or "Paket"
+            stage, i = f"{STAGING_DIR}/{base}", 1
+            while stage in _targets or os.path.lexists(stage):
+                i += 1
+                stage = f"{STAGING_DIR}/{base} ({i})"
+        _targets[stage] = {"target": target, "t": time.time()}
+        _targets_save_locked()
+    return stage
+
+
+def _set_dir(target, pkg):
+    """Ordner eines Linkgrabber-Pakets setzen. Mit Zwischenablage lädt JD nach
+    STAGING_DIR/<Paket>, das Ziel merkt sich die WebUI. Liefert das JD-Ergebnis."""
+    target = _norm(target)
+    if not _staging_on() or not target or _under(target, STAGING_DIR):
+        return jdapi.grabber_set_directory(target, [pkg.get("uuid")])
+    current = _norm(pkg.get("saveTo"))
+    stage = _reserve_stage(pkg.get("name"), target, current)
+    if current != stage:
+        r = jdapi.grabber_set_directory(stage, [pkg.get("uuid")])
+        if not r["ok"]:
+            if not _staged(current):
+                _target_drop(stage)
+            return r
+    return {"ok": True, "data": None}
 
 
 def _apply_dirs(pkgs, category=None):
@@ -306,9 +443,11 @@ def _apply_dirs(pkgs, category=None):
             target = _category_dir(category, g.get("name"))
         elif FALLBACK_DIR and _unsorted(g.get("saveTo")):
             target = _fallback_dir(g.get("name"))
+        elif _staging_on() and _norm(g.get("saveTo")) and not _under(g.get("saveTo"), STAGING_DIR):
+            target = _norm(g.get("saveTo"))   # Ordner steht schon (z. B. in JD gewählt): über die SSD
         else:
             continue
-        r = jdapi.grabber_set_directory(target, [g.get("uuid")])
+        r = _set_dir(target, g)
         if not r["ok"]:
             return r["error"]
     return None
@@ -343,6 +482,13 @@ def _package_view(p, links, queue):
     elif finished:
         phase = "done"
         label = "Fertig · entpackt" if "SUCCESSFUL" in ex_states else "Fertig"
+        if _staged(p.get("saveTo")):
+            if _post_state["moving"] == p.get("uuid"):
+                phase, label, mode, pct = "extract", "Verschiebt ins Ziel", "extract", None
+            elif _ready_state(links, queue) == "wait":
+                label = "Fertig · wartet aufs Entpacken"
+            else:
+                label = "Fertig · wird gleich verschoben"
     elif p.get("enabled") is False:
         phase, label = "waiting", "Angehalten"
     else:
@@ -362,7 +508,7 @@ def _package_view(p, links, queue):
         "files": files,
         "filesDone": files_done,
         "status": status_text,
-        "saveTo": p.get("saveTo") or "",
+        "saveTo": _resolve(p.get("saveTo")),
         "category": _category_of(p.get("saveTo")),
         "enabled": p.get("enabled") is not False,
     }
@@ -378,14 +524,14 @@ def _grabber_view(g):
         "offline": g.get("offlineCount") or 0,
         "unknown": (g.get("unknownCount") or 0) + (g.get("tempUnknownCount") or 0),
         "hosts": g.get("hosts") or [],
-        "saveTo": g.get("saveTo") or "",
+        "saveTo": _resolve(g.get("saveTo")),
         **_grabber_target(g),
     }
 
 
 def _grabber_target(g):
     """Kategorie, Unterordner (fürs Eingabefeld) und wohin das Paket bei Übernahme geht."""
-    st, name = (g.get("saveTo") or "").rstrip("/"), g.get("name")
+    st, name = _resolve(g.get("saveTo")), g.get("name")
     cat = _category_of(st)
     if cat:
         return {"category": cat, "folder": st[len(CATEGORIES[cat]) + 1:], "target": st}
@@ -696,25 +842,33 @@ def _process_job(job):
         target = _category_dir(category, name)
     elif chosen:
         category = _category_of(chosen.get("saveTo"))
-        target = chosen.get("saveTo") if single else _category_dir(category, name)
+        target = _resolve(chosen.get("saveTo")) if single else _category_dir(category, name)
     elif FALLBACK_DIR:
         target = _fallback_dir(name)
     else:
-        target = next((p.get("saveTo") for p in involved if p.get("saveTo")), "")
+        target = next((_resolve(p.get("saveTo")) for p in involved if p.get("saveTo")), "")
 
     # 3. Ein Paket: nur Name/Ordner angleichen (Paket-ID bleibt). Mehrere: zusammenfassen.
     final_pkgs = set(pkg_ids)
     if single:
-        pkg = involved[0]
+        pkg = dict(involved[0])
         if pkg.get("name") != name:
             jdapi.grabber_rename(pkg.get("uuid"), name)
-        if target and (pkg.get("saveTo") or "") != target:
-            r = jdapi.grabber_set_directory(target, [pkg.get("uuid")])
+            pkg["name"] = name
+        restage = _staging_on() and not _staged(pkg.get("saveTo")) and not _under(target, STAGING_DIR)
+        if target and (_resolve(pkg.get("saveTo")) != _norm(target) or restage):
+            r = _set_dir(target, pkg)
             if not r["ok"]:
                 notice("err", f"{job['label']}: Ordner setzen fehlgeschlagen – {r['error']}")
                 return
     else:
-        r = jdapi.grabber_new_package(link_ids, name, target)
+        # Mit Zwischenablage bekommt das neue Paket gleich seinen Ordner auf der SSD
+        dest = target
+        if target and _staging_on() and not _under(target, STAGING_DIR):
+            dest = _reserve_stage(name, target)
+        r = jdapi.grabber_new_package(link_ids, name, dest)
+        if not r["ok"] and dest != target:
+            _target_drop(dest)
         if r["ok"]:
             now = {l.get("uuid"): l.get("packageUUID") for l in _grabber_link_list()}
             final_pkgs = {now[i] for i in link_ids if i in now} or final_pkgs
@@ -725,7 +879,7 @@ def _process_job(job):
             log.warning("%s: Zusammenfassen nicht möglich (%s) - setze nur den Ordner", job["label"], r["error"])
             if target:
                 for p in pkg_ids:
-                    jdapi.grabber_set_directory(target, [p])
+                    _set_dir(target, pkgs.get(p) or {"uuid": p, "name": name})
     invalidate()
 
     # 4. Im Linkgrabber lassen oder übernehmen
@@ -738,6 +892,7 @@ def _process_job(job):
     if not r["ok"]:
         notice("err", f"{job['label']}: Übernahme in die Downloads fehlgeschlagen – {r['error']}")
         return
+    _post_wakeup()
     if job["mode"] == "start":
         jdapi.start()
     notice("ok", f"{job['label']}: {what} übernommen"
@@ -820,6 +975,7 @@ def confirm_all():
     r = jdapi.grabber_to_downloads(set(pkgs))
     if r["ok"] and data.get("autostart"):
         jdapi.start()
+    _post_wakeup()
     invalidate()
     return jsonify(r)
 
@@ -842,8 +998,8 @@ def _set_grabber_dir(pkg, data):
     elif FALLBACK_DIR:
         target = _fallback_dir(pkg.get("name"))
     else:
-        return pkg.get("saveTo"), None   # JD-Standardordner lassen
-    r = jdapi.grabber_set_directory(target, [pkg.get("uuid")])
+        return _resolve(pkg.get("saveTo")), None   # JD-Standardordner lassen
+    r = _set_dir(target, pkg)
     if not r["ok"]:
         return None, jsonify(r)
     log.info("Linkgrabber: %s -> %s", pkg.get("name"), target)
@@ -890,6 +1046,7 @@ def grabber_confirm():
     r = jdapi.grabber_to_downloads([pid])
     if r["ok"] and data.get("autostart"):
         jdapi.start()
+    _post_wakeup()
     invalidate()
     return jsonify(r)
 
@@ -1037,9 +1194,237 @@ def remove_package():
 
 @app.post("/api/downloads/cleanup")
 def cleanup():
-    r = jdapi.cleanup_finished()
+    if not _staging_on():
+        r = jdapi.cleanup_finished()
+        invalidate()
+        return jsonify(r)
+    # Pakete in der Zwischenablage nimmt der Hintergrund-Job erst nach dem Verschieben
+    # aus der Liste - sonst blieben ihre Dateien auf der SSD liegen.
+    res = {k: fn() for k, fn in (("packages", jdapi.query_packages), ("links", jdapi.query_links),
+                                 ("queue", jdapi.extraction_queue))}
+    if not res["packages"]["ok"]:
+        return jsonify(res["packages"])
+    links_by_pkg = defaultdict(list)
+    for l in jdapi.as_list(res["links"]):
+        links_by_pkg[l.get("packageUUID")].append(l)
+    queue = jdapi.as_list(res["queue"])
+    done = [p.get("uuid") for p in jdapi.as_list(res["packages"])
+            if not _staged(p.get("saveTo"))
+            and _package_view(p, links_by_pkg.get(p.get("uuid"), []), queue)["phase"] == "done"]
+    r = jdapi.remove_packages(done) if done else {"ok": True, "data": None}
     invalidate()
     return jsonify(r)
+
+
+# ── Zwischenablage: Hintergrund-Job ───────────────────────────────────────────
+
+_ARCHIVE_RE = re.compile(r"\.(rar|zip|7z|tar|tgz|gz|bz2|xz|r\d{2}|z\d{2}|\d{3})$", re.IGNORECASE)
+POST_SETTLE = 15.0          # so lange muss ein Paket fertig sein, bevor es verschoben wird
+MOVE_RETRY = 600.0          # nach einem Fehler beim Verschieben erst so viel später erneut
+PRUNE_AFTER = 2 * 86400     # gemerkte Ziele ohne Paket werden nach dieser Zeit vergessen
+
+_post_wake = threading.Event()
+_post_state = {"moving": None, "started": False, "archive_api": True, "last_prune": 0.0}
+_post_lock = threading.Lock()
+_archives_set = defaultdict(set)   # Paket-ID -> Archiv-IDs mit gesetztem Entpack-Ziel
+_done_since = {}                   # Paket-ID -> seit wann (monotonic) fertig
+_move_failed = {}                  # Paket-ID -> Zeitpunkt (monotonic) des letzten Fehlers
+_warned = set()
+
+
+def _post_wakeup():
+    if _staging_on():
+        _post_wake.set()
+
+
+def _warn_once(key, kind, msg):
+    if key not in _warned:
+        _warned.add(key)
+        notice(kind, msg)
+
+
+def _ready_state(links, queue):
+    """"ready" = alles geladen und entpackt, "error" = Entpack-Fehler, sonst "wait"."""
+    active = [l for l in links if l.get("enabled") is not False]
+    if not active or not all(l.get("finished") for l in active):
+        return "wait"
+    states = [str(l.get("extractionStatus") or "") for l in active]
+    if any(s.startswith("ERR") for s in states):
+        return "error"
+    if "RUNNING" in states or _archive_for(active, queue):
+        return "wait"
+    # Archive ohne Entpack-Status: JD hat noch nicht angefangen (oder Auto-Entpacken ist aus)
+    if any(_ARCHIVE_RE.search(l.get("name") or "") and str(l.get("extractionStatus") or "") != "SUCCESSFUL"
+           for l in active):
+        return "wait"
+    return "ready"
+
+
+def _set_archive_targets(pkg, target):
+    """Für alle Archive des Pakets "Entpacken nach" = Ziel setzen (JD entpackt dann direkt
+    auf die HDD) und die Archive nach dem Entpacken löschen lassen."""
+    if not _post_state["archive_api"]:
+        return
+    uuid = pkg.get("uuid")
+    r = jdapi.archive_info([uuid])
+    if not r["ok"]:
+        if "404" in r["error"] or "NOT_FOUND" in r["error"]:
+            _post_state["archive_api"] = False
+            log.warning("JD kennt extraction/getArchiveInfo nicht (%s) - Archive werden auf der SSD "
+                        "entpackt und danach verschoben.", r["error"])
+        return
+    for a in jdapi.as_list(r):
+        aid = a.get("archiveId") if isinstance(a, dict) else None
+        if not aid or aid in _archives_set[uuid]:
+            continue
+        s = jdapi.set_archive_settings(aid, {"extractPath": target, "autoExtract": True,
+                                             "removeFilesAfterExtraction": True})
+        if s["ok"]:
+            _archives_set[uuid].add(aid)
+            log.info("Entpacken: »%s« -> %s", a.get("archiveName") or aid, target)
+        else:
+            log.warning("Entpack-Ziel für »%s« nicht gesetzt: %s", a.get("archiveName") or aid, s["error"])
+            if "404" in s["error"] or "NOT_FOUND" in s["error"]:
+                _post_state["archive_api"] = False
+            return
+
+
+def _move_package(pkg, links, stage, target):
+    uuid, name = pkg.get("uuid"), pkg.get("name") or os.path.basename(stage)
+    real_stage = os.path.realpath(stage)
+    if not _under(real_stage, os.path.realpath(STAGING_DIR)) or real_stage == os.path.realpath(STAGING_DIR) \
+            or _under(target, STAGING_DIR):
+        _warn_once(("unsafe", stage), "err", f"»{name}«: {stage} -> {target} wird nicht verschoben (Pfad unzulässig).")
+        return
+    archives = {l.get("name") for l in links if _ARCHIVE_RE.search(l.get("name") or "")}
+    _post_state["moving"] = uuid
+    invalidate()
+    try:
+        moved, deleted = mover.move_tree(stage, target, drop_names=archives, junk_ext=STAGING_JUNK)
+    except OSError as e:
+        _move_failed[uuid] = time.monotonic()
+        notice("err", f"»{name}«: Verschieben nach {target} fehlgeschlagen – {e}. Neuer Versuch in "
+                      f"{int(MOVE_RETRY / 60)} min, die Dateien bleiben bis dahin auf der SSD.")
+        return
+    finally:
+        _post_state["moving"] = None
+        invalidate()
+    r = jdapi.remove_packages([uuid])
+    if not r["ok"]:
+        log.warning("»%s«: verschoben, aber nicht aus der Liste entfernt: %s", name, r["error"])
+    _target_drop(stage)
+    for d in (_done_since, _move_failed, _archives_set):
+        d.pop(uuid, None)
+    notice("ok", f"»{name}« fertig in {target}"
+                 + (f" ({moved} Datei{'en' if moved != 1 else ''} verschoben)" if moved else ""))
+    log.info("»%s«: %d verschoben, %d gelöscht, %s aufgeräumt", name, moved, deleted, stage)
+
+
+def _prune_targets(download_dirs):
+    """Gemerkte Ziele vergessen, zu denen es kein Paket mehr gibt (z. B. von Hand entfernt)."""
+    grabber = jdapi.grabber_packages()
+    if not grabber["ok"]:
+        return
+    in_use = set(download_dirs) | {_norm(g.get("saveTo")) for g in jdapi.as_list(grabber)}
+    now = time.time()
+    with _targets_lock:
+        stale = [k for k, v in _targets.items() if k not in in_use and now - v["t"] > PRUNE_AFTER]
+        for k in stale:
+            del _targets[k]
+        if stale:
+            _targets_save_locked()
+    for k in stale:
+        log.info("Zwischenablage: Ziel für %s vergessen (kein Paket mehr)", k)
+
+
+def _post_run():
+    res = {k: fn() for k, fn in (("packages", jdapi.query_packages), ("links", jdapi.query_links),
+                                 ("queue", jdapi.extraction_queue))}
+    if not res["packages"]["ok"] or not res["links"]["ok"]:
+        return
+    links_by_pkg = defaultdict(list)
+    for l in jdapi.as_list(res["links"]):
+        links_by_pkg[l.get("packageUUID")].append(l)
+    queue = jdapi.as_list(res["queue"])
+    packages = jdapi.as_list(res["packages"])
+    staged_dirs = set()
+    for p in packages:
+        stage, uuid = _norm(p.get("saveTo")), p.get("uuid")
+        if not _staged(stage):
+            continue
+        staged_dirs.add(stage)
+        target = _target_of(stage)
+        if not target:
+            if not FALLBACK_DIR:
+                _warn_once(("notarget", stage), "warn",
+                           f"»{p.get('name')}« liegt in {stage}, ohne Ziel (FALLBACK_DIR leer) - bleibt dort.")
+                continue
+            target = _fallback_dir(os.path.basename(stage))   # z. B. direkt in JD hinzugefügt
+            _target_put(stage, target)
+        links = links_by_pkg.get(uuid, [])
+        if not p.get("finished"):
+            _set_archive_targets(p, target)
+        state = _ready_state(links, queue)
+        if state == "error":
+            _warn_once(("exerr", uuid), "err",
+                       f"»{p.get('name')}«: Entpacken fehlgeschlagen - bleibt in {stage} auf der SSD.")
+            _done_since.pop(uuid, None)
+            continue
+        if state != "ready":
+            _done_since.pop(uuid, None)
+            continue
+        now = time.monotonic()
+        if now - _done_since.setdefault(uuid, now) < POST_SETTLE:
+            continue    # erst beim nächsten Durchlauf: JD könnte gerade erst mit dem Entpacken anfangen
+        if now - _move_failed.get(uuid, -MOVE_RETRY) < MOVE_RETRY:
+            continue
+        _move_package(p, links, stage, target)
+    if time.time() - _post_state["last_prune"] > 3600:
+        _post_state["last_prune"] = time.time()
+        _prune_targets(staged_dirs)
+
+
+def _post_loop():
+    while True:
+        _post_wake.wait(POST_INTERVAL)
+        _post_wake.clear()
+        try:
+            with _post_lock:
+                _post_run()
+        except Exception:  # noqa: BLE001 - Job darf nicht sterben
+            log.exception("Zwischenablage: Fehler im Hintergrund-Job")
+
+
+def _staging_setup():
+    """Prüft die Ordner und startet den Hintergrund-Job (einmal pro Prozess)."""
+    global STAGING_DIR
+    if not STAGING_DIR:
+        return
+    problem = None
+    if not STAGING_DIR.startswith("/"):
+        problem = "muss mit / beginnen"
+    elif any(p and (_under(p, STAGING_DIR) or _under(STAGING_DIR, p))
+             for p in [*CATEGORIES.values(), FALLBACK_DIR]):
+        problem = "darf weder in einem Ziel-Ordner liegen noch eins enthalten"
+    elif not os.path.isdir(STAGING_DIR) or not os.access(STAGING_DIR, os.W_OK):
+        problem = "fehlt im Container oder ist nicht beschreibbar (Volume bei jd-webui?)"
+    if problem:
+        log.error("STAGING_DIR=%s %s - Zwischenablage AUS, Downloads gehen direkt ins Ziel.", STAGING_DIR, problem)
+        STAGING_DIR = ""
+        return
+    for p in [*CATEGORIES.values(), FALLBACK_DIR]:
+        if p and not os.path.isdir(p):
+            log.warning("Zwischenablage: Ziel %s fehlt im Container - Volume bei jd-webui prüfen, "
+                        "sonst klappt das Verschieben dorthin nicht.", p)
+    _targets_load()
+    log.info("Zwischenablage: Downloads nach %s/<Paket>, danach ins Ziel (Prüfung alle %gs, löscht %s)",
+             STAGING_DIR, POST_INTERVAL, " ".join(STAGING_JUNK) or "nichts")
+    if not _post_state["started"]:
+        _post_state["started"] = True
+        threading.Thread(target=_post_loop, name="zwischenablage", daemon=True).start()
+
+
+_staging_setup()
 
 
 # ── Sonstiges ─────────────────────────────────────────────────────────────────

@@ -8,7 +8,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app.py cnl.py jdapi.py jd_init.py ./
+COPY app.py cnl.py jdapi.py jd_init.py mover.py ./
 COPY static ./static
 
 # Gleiche UID/GID wie USER_ID/GROUP_ID des JDownloader-Containers
