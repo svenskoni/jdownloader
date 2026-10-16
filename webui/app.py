@@ -927,7 +927,7 @@ def add_url():
 
     r = _intake_add(lambda: jdapi.add_links(links, package_name, autostart=False, extract_password=password),
                     package_name or "Links", name=package_name, category=category,
-                    mode="start" if autostart else "queue")
+                    mode="start" if autostart else "grabber")
     if not r["ok"]:
         return jsonify(r)
     count = len([l for l in links.splitlines() if l.strip()])
@@ -958,7 +958,7 @@ def add_dlc():
 
     stem = os.path.splitext(os.path.basename(f.filename.replace("\\", "/")))[0]
     r = _intake_add(lambda: jdapi.add_container(ctype, base64.b64encode(content).decode("ascii")),
-                    f.filename, name=stem, category=category, mode="start" if autostart else "queue",
+                    f.filename, name=stem, category=category, mode="start" if autostart else "grabber",
                     from_file=True)
     if not r["ok"]:
         return jsonify(r)

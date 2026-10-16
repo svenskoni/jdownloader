@@ -446,6 +446,9 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, v); } catch { /* egal */ } },
 };
 $("#grabStart").checked = store.get("jdwebui.grabStart", "1") === "1";
+// "Sofort starten" im Formular merken (aus = Paket wartet im Linkgrabber)
+$("#autostart").checked = store.get("jdwebui.autostart", "1") === "1";
+$("#autostart").addEventListener("change", () => store.set("jdwebui.autostart", $("#autostart").checked ? "1" : "0"));
 $("#grabStart").addEventListener("change", () => store.set("jdwebui.grabStart", $("#grabStart").checked ? "1" : "0"));
 
 // Kategorie umschalten: nochmal auf die aktive Kategorie = keine Kategorie
