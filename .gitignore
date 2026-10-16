@@ -1,0 +1,5 @@
+# Von Chrome beim Laden der entpackten Erweiterung erzeugt
+extension/_metadata/
+__pycache__/
+# Wird von der WebUI beim Download erzeugt (Server-Adresse)
+extension/config.json

@@ -109,6 +109,19 @@ def cleanup_finished():
     return call("/downloadsV2/cleanup", [], [], "DELETE_FINISHED", "REMOVE_LINKS_ONLY", "ALL")
 
 
+def set_enabled(enabled, package_ids):
+    """Pakete (de)aktivieren. Deaktivieren hält laufende Downloads an, Teilstücke bleiben."""
+    return call("/downloadsV2/setEnabled", bool(enabled), [], list(package_ids))
+
+
+def force_download(package_ids):
+    """Startet genau diese Pakete sofort ("Erzwungener Start"), auch wenn der Rest gestoppt ist."""
+    r = call("/downloadsV2/forceDownload", [], list(package_ids))
+    if r["ok"]:
+        return r
+    return call("/downloadcontroller/forceDownload", [], list(package_ids))
+
+
 # ── Download-Controller ───────────────────────────────────────────────────────
 
 def get_state():
@@ -137,6 +150,17 @@ def extraction_queue():
     return call("/extraction/getQueue")
 
 
+def archive_info(package_ids):
+    """Archive der Pakete in der Download-Liste: [{archiveId, archiveName, states ...}]."""
+    return call("/extraction/getArchiveInfo", [], list(package_ids))
+
+
+def set_archive_settings(archive_id, settings):
+    """Einstellungen eines Archivs ändern. Nur gesetzte Felder zählen, z. B.
+    {"extractPath": "/medien/Filme/X", "removeFilesAfterExtraction": True}."""
+    return call("/extraction/setArchiveSettings", str(archive_id), settings)
+
+
 # ── Linkgrabber ───────────────────────────────────────────────────────────────
 
 def add_links(links, package_name="", autostart=False, extract_password=""):
@@ -162,12 +186,55 @@ def is_collecting():
     return None
 
 
+GRABBER_QUERY = {
+    "childCount": True, "bytesTotal": True, "saveTo": True, "hosts": True,
+    "availableOnlineCount": True, "availableOfflineCount": True,
+    "availableUnknownCount": True, "availableTempUnknownCount": True,
+    "maxResults": -1, "startAt": 0,
+}
+
+
 def grabber_packages():
-    r = call("/linkgrabberv2/queryPackages", {"childCount": True, "maxResults": -1, "startAt": 0})
+    r = call("/linkgrabberv2/queryPackages", GRABBER_QUERY)
     if r["ok"]:
         return r
     # Ältere JD-Versionen kennen nur den alten Namespace
     return call("/linkcollector/queryPackages", {"maxResults": -1, "startAt": 0})
+
+
+def grabber_links(job_ids=None):
+    """Links im Linkgrabber (uuid, name, packageUUID ...), optional nur aus bestimmten
+    Hinzufügen-Vorgängen (Job-ID aus addLinks/addContainer)."""
+    q = {"maxResults": -1, "startAt": 0}
+    if job_ids:
+        q["jobUUIDs"] = list(job_ids)
+    return call("/linkgrabberv2/queryLinks", q)
+
+
+def crawler_jobs(job_ids):
+    """Status der Crawler-Jobs: [{jobId, crawling, checking, ...}] - leer, wenn fertig."""
+    return call("/linkgrabberv2/queryLinkCrawlerJobs", {"jobIds": list(job_ids), "collectorInfo": True})
+
+
+def grabber_new_package(link_ids, name, directory):
+    """Links in ein neues Paket mit Name und Download-Ordner verschieben (leere Pakete
+    entfernt JD selbst). Name/Ordner gehen roh mit, siehe grabber_set_directory."""
+    return call("/linkgrabberv2/movetoNewPackage", list(link_ids), [], name, directory)
+
+
+def grabber_rename(package_id, name):
+    return call("/linkgrabberv2/renamePackage", package_id, name)
+
+
+def grabber_set_directory(directory, package_ids):
+    """Download-Ordner von Linkgrabber-Paketen setzen (Pfad im JDownloader-Container).
+    Strings gehen roh als Parameter mit (wie bei addContainer); der Aufrufer sorgt dafür,
+    dass der Pfad nicht mit einem Anführungszeichen beginnt."""
+    return call("/linkgrabberv2/setDownloadDirectory", directory, list(package_ids))
+
+
+def grabber_remove(package_ids):
+    return call("/linkgrabberv2/removeLinks", [], list(package_ids))
 
 
 def grabber_to_downloads(package_ids):

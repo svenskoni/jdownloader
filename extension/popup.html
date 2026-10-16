@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <title>JD WebUI Click'n'Load</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <h1><img src="icons/32.png" alt="" width="20" height="20"> Click'n'Load → JD WebUI</h1>
+
+  <div id="access" class="warnbox" hidden>
+    <p><strong>Website-Zugriff fehlt.</strong> So kann die Erweiterung Click'n'Load nicht abfangen, es kommt nichts bei der WebUI an.</p>
+    <button id="grant" class="primary" type="button">Zugriff erlauben</button>
+  </div>
+
+  <form id="form" autocomplete="off">
+    <label for="server">Adresse des Click'n'Load-Ports der WebUI</label>
+    <input id="server" type="text" placeholder="http://192.168.1.10:9666" spellcheck="false">
+    <label class="check"><input id="enabled" type="checkbox"> Weiterleitung aktiv</label>
+    <div class="row">
+      <button id="save" class="primary" type="submit">Speichern</button>
+      <button id="test" type="button">Verbindung testen</button>
+    </div>
+  </form>
+  <p id="status" class="status" hidden></p>
+
+  <h2>Zuletzt</h2>
+  <p id="last" class="muted">Noch nichts weitergeleitet.</p>
+
+  <p class="hint">Solange die Weiterleitung aktiv ist, geht Click'n'Load in diesem Browser immer an die WebUI, auch wenn auf dem PC selbst ein JDownloader läuft.</p>
+  <script src="common.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

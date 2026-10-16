@@ -72,6 +72,8 @@ body {
 .state { display: flex; align-items: center; gap: 10px; flex: 1; }
 .speed { font-variant-numeric: tabular-nums; color: var(--muted); }
 .controls { display: flex; gap: 6px; }
+.logout { order: 2; margin: 0; }
+.logout[hidden] { display: none; }
 
 /* ── Buttons ───────────────────────────────────────────────── */
 .btn {
@@ -89,7 +91,11 @@ body {
 .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
 .btn.sm { padding: 4px 10px; font-size: 13px; }
 .btn.icon { padding: 2px 8px; border-color: transparent; color: var(--muted); }
-.btn.icon:hover { color: var(--error); border-color: var(--border); }
+.btn.icon:hover:not(:disabled) { color: var(--error); border-color: var(--border); }
+.btn.icon.act:hover:not(:disabled) { color: var(--accent); }
+.btn.ghost { border-color: transparent; color: var(--muted); background: transparent; }
+.btn.ghost:hover:not(:disabled) { color: var(--text); border-color: var(--border); }
+.btn[hidden] { display: none; }
 
 /* ── Badges ────────────────────────────────────────────────── */
 .badge {
@@ -165,7 +171,7 @@ h2 { font-size: 16px; margin: 0 0 12px; }
 
 /* ── Hinzufügen ────────────────────────────────────────────── */
 form { display: grid; gap: 8px; }
-textarea, input[type="text"] {
+textarea, input[type="text"], input[type="password"], select {
   width: 100%;
   font: inherit;
   padding: 8px 10px;
@@ -176,7 +182,12 @@ textarea, input[type="text"] {
   min-width: 0;
 }
 textarea { resize: vertical; }
-textarea:focus, input[type="text"]:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+textarea:focus, input[type="text"]:focus, input[type="password"]:focus, select:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+select { width: auto; cursor: pointer; }
+select[hidden] { display: none; }
 .add-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .add-row > input { flex: 1 1 200px; }
 .add-row .btn { margin-left: auto; }
@@ -192,6 +203,15 @@ textarea:focus, input[type="text"]:focus { outline: 2px solid var(--accent); out
   cursor: pointer;
 }
 .drop:hover, .drop.over, .drop:focus { border-color: var(--accent); color: var(--text); outline: none; }
+.cnl-info { margin-top: 8px; overflow-wrap: anywhere; }
+.cnl-info.err { color: var(--error); }
+.ext-help { margin-top: 10px; color: var(--muted); }
+.ext-help summary { cursor: pointer; width: fit-content; }
+.ext-help summary:hover { color: var(--text); }
+.ext-help p { margin: 10px 0 6px; }
+.ext-help a.btn { text-decoration: none; display: inline-block; }
+.ext-help ol { margin: 6px 0 0; padding-left: 20px; display: grid; gap: 4px; }
+.ext-help code { font-size: 12px; background: var(--bg); padding: 1px 4px; border-radius: 4px; }
 
 /* ── Hinweise ──────────────────────────────────────────────── */
 .banner, .warn {
@@ -229,9 +249,50 @@ textarea:focus, input[type="text"]:focus { outline: 2px solid var(--accent); out
   white-space: nowrap;
   min-width: 0;
 }
+.pkg.disabled .pkg-name { color: var(--muted); }
+.pkg-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
+.btn.act { display: inline-grid; place-items: center; padding: 4px 7px; }
+.btn.act svg { width: 14px; height: 14px; fill: currentColor; }
+.btn.act[hidden] { display: none; }
 .pkg-meta { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .pkg-status { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
 .empty { text-align: center; color: var(--muted); padding: 24px 0 8px; }
+
+/* ── Linkgrabber ───────────────────────────────────────────── */
+.grabber[hidden] { display: none; }
+.grabber .list-head { flex-wrap: wrap; }
+.head-actions { display: flex; align-items: center; gap: 12px; margin-left: auto; }
+.head-actions .check { white-space: nowrap; }
+.hint { margin: 6px 0 0; }
+.grab .pkg-actions { gap: 6px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chips[hidden] { display: none; }
+.chip {
+  font: inherit;
+  font-size: 13px;
+  padding: 3px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+}
+.chip:hover { border-color: var(--accent); }
+.chip.active { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+.folder-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.folder-row[hidden], .target[hidden] { display: none; }
+.folder-base { color: var(--muted); font-size: 13px; white-space: nowrap; font-family: ui-monospace, Menlo, Consolas, monospace; }
+.folder-row input { flex: 1; padding: 5px 8px; font-size: 14px; font-family: ui-monospace, Menlo, Consolas, monospace; }
+.target { color: var(--muted); overflow-wrap: anywhere; }
+
+/* ── Anmeldung ─────────────────────────────────────────────── */
+.login-body { min-height: 100vh; display: grid; place-items: center; padding: 16px; }
+.login { width: min(360px, 100%); display: grid; gap: 12px; }
+.login h1 { font-size: 20px; margin: 0 0 4px; }
+.login label:not(.check) { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
+.login label input { font-size: 15px; color: var(--text); }
+.login .btn { justify-self: stretch; padding: 9px 14px; }
+.login-error { margin: 0; color: var(--error); font-size: 14px; }
 
 /* ── Toasts ────────────────────────────────────────────────── */
 .toasts {
@@ -259,7 +320,8 @@ textarea:focus, input[type="text"]:focus { outline: 2px solid var(--accent); out
 .toast.warn { background: #d97706; color: #fff; }
 
 @media (max-width: 560px) {
-  .controls { width: 100%; }
+  .logout { order: 0; }
+  .controls { width: 100%; order: 1; }
   .controls .btn { flex: 1; }
   .activity { font-size: 16px; }
 }

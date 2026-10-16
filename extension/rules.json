@@ -1,0 +1,90 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": {
+      "type": "redirect",
+      "redirect": {
+        "extensionPath": "/cnl/jdcheck.js"
+      }
+    },
+    "condition": {
+      "regexFilter": "^http://(?:127\\.0\\.0\\.1|localhost):9666/jdcheck\\.js(?:\\?.*)?$",
+      "resourceTypes": [
+        "main_frame",
+        "sub_frame",
+        "script",
+        "xmlhttprequest",
+        "other",
+        "ping",
+        "object"
+      ]
+    }
+  },
+  {
+    "id": 2,
+    "priority": 1,
+    "action": {
+      "type": "redirect",
+      "redirect": {
+        "extensionPath": "/cnl/crossdomain.xml"
+      }
+    },
+    "condition": {
+      "regexFilter": "^http://(?:127\\.0\\.0\\.1|localhost):9666/crossdomain\\.xml(?:\\?.*)?$",
+      "resourceTypes": [
+        "main_frame",
+        "sub_frame",
+        "script",
+        "xmlhttprequest",
+        "other",
+        "ping",
+        "object"
+      ]
+    }
+  },
+  {
+    "id": 3,
+    "priority": 1,
+    "action": {
+      "type": "redirect",
+      "redirect": {
+        "extensionPath": "/cnl/flash.txt"
+      }
+    },
+    "condition": {
+      "regexFilter": "^http://(?:127\\.0\\.0\\.1|localhost):9666/flash/?(?:\\?.*)?$",
+      "resourceTypes": [
+        "main_frame",
+        "sub_frame",
+        "script",
+        "xmlhttprequest",
+        "other",
+        "ping",
+        "object"
+      ]
+    }
+  },
+  {
+    "id": 4,
+    "priority": 1,
+    "action": {
+      "type": "redirect",
+      "redirect": {
+        "extensionPath": "/cnl/ok.txt"
+      }
+    },
+    "condition": {
+      "regexFilter": "^http://(?:127\\.0\\.0\\.1|localhost):9666/flash/add(?:crypted2?)?/?(?:\\?.*)?$",
+      "resourceTypes": [
+        "main_frame",
+        "sub_frame",
+        "script",
+        "xmlhttprequest",
+        "other",
+        "ping",
+        "object"
+      ]
+    }
+  }
+]
