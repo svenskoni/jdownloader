@@ -78,7 +78,7 @@ $("#grant").addEventListener("click", async () => {
 
 async function init() {
   await renderAccess();
-  const cfg = await chrome.storage.sync.get(CNL_DEFAULTS);
+  const cfg = await loadConfig();
   $("#server").value = cfg.server || "";
   $("#enabled").checked = cfg.enabled !== false;
   const { last } = await chrome.storage.local.get("last");

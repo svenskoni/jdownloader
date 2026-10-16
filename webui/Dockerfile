@@ -1,3 +1,4 @@
+# Build-Kontext ist das Repo (siehe docker-compose.yml), damit die Erweiterung mit ins Image kommt
 FROM python:3.12-alpine
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -5,11 +6,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-COPY requirements.txt .
+COPY webui/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app.py cnl.py jdapi.py jd_init.py mover.py ./
-COPY static ./static
+COPY webui/app.py webui/cnl.py webui/jdapi.py webui/jd_init.py webui/mover.py ./
+COPY webui/static ./static
+# Click'n'Load-Erweiterung: die WebUI bietet sie als ZIP zum Download an (/extension.zip)
+COPY extension ./extension
 
 # Gleiche UID/GID wie USER_ID/GROUP_ID des JDownloader-Containers
 USER 1000:1000

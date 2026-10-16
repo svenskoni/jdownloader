@@ -2,7 +2,9 @@ services:
   # Einmaliger Init-Schritt vor jedem JD-Start: schaltet die lokale JD-API (Port 3128)
   # in der Config frei. Beendet sich danach (Status "exited" in Portainer ist normal).
   jd-init:
-    build: ./webui
+    build:
+      context: .                 # Repo als Kontext: Image enthält auch extension/
+      dockerfile: webui/Dockerfile
     image: jd-webui:local
     pull_policy: build           # nie von Docker Hub ziehen, bei jedem Deploy neu bauen
     container_name: jd-init
@@ -47,7 +49,9 @@ services:
 
   # Eigene Web-Oberfläche (plain HTTP, nur Intranet) + Click'n'Load-Empfänger
   jd-webui:
-    build: ./webui
+    build:
+      context: .
+      dockerfile: webui/Dockerfile
     image: jd-webui:local
     pull_policy: build           # nie von Docker Hub ziehen, bei jedem Deploy neu bauen
     container_name: jd-webui
@@ -64,6 +68,7 @@ services:
       - WEBUI_PASS=${JD_PASS}
       - CNL_ALLOWED=${CNL_ALLOWED:-}         # z. B. IP deines PCs; leer = jede Adresse
       - CNL_ACTION=${CNL_ACTION:-grabber}     # grabber = im Linkgrabber lassen, queue = in Downloads, start = sofort starten
+      - CNL_PUBLIC_PORT=${CNL_PORT:-9666}     # Port von außen, steht in der heruntergeladenen Erweiterung
       - SESSION_DAYS=${SESSION_DAYS:-365}     # so lange bleibt der Browser nach dem Anmelden angemeldet
       # Kategorien im Linkgrabber: Name=Ordner im jdownloader-Container (Volumes oben)
       - CATEGORIES=${CATEGORIES:-Anime=/medien/Anime;Filme=/medien/Filme;Serien=/medien/Serien;Spiele=/spiele}

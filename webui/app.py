@@ -14,6 +14,7 @@ im Linkgrabber bleiben, übernommen oder auch gestartet werden.
 """
 
 import base64
+import io
 import hashlib
 import hmac
 import html
@@ -23,6 +24,8 @@ import os
 import re
 import threading
 import time
+import urllib.parse
+import zipfile
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 
@@ -65,11 +68,20 @@ CNL_PORT = int(os.environ.get("CNL_PORT", "9666"))
 CNL_ACTIONS = {"grabber": "bleiben im Linkgrabber", "queue": "kommen in die Download-Liste",
                "start": "kommen in die Download-Liste und starten"}
 CNL_ACTION = os.environ.get("CNL_ACTION", "grabber").strip().lower()
+# Für die herunterladbare Erweiterung: unter welchem Port/welcher Adresse der CNL-Empfänger
+# von den PCs aus erreichbar ist (Port-Mapping im Stack). Leer = Hostname der WebUI + Port.
+CNL_PUBLIC_PORT = int(os.environ.get("CNL_PUBLIC_PORT") or CNL_PORT)
+CNL_PUBLIC_URL = os.environ.get("CNL_PUBLIC_URL", "").strip().rstrip("/")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("jd-webui")
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+# Erweiterung: im Image /app/extension, lokal im Repo ../extension
+EXTENSION_DIR = os.environ.get("EXTENSION_DIR") or next(
+    (d for d in (os.path.join(os.path.dirname(os.path.abspath(__file__)), "extension"),
+                 os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "extension"))
+     if os.path.isfile(os.path.join(d, "manifest.json"))), "")
 app = Flask(__name__, static_folder=STATIC_DIR, static_url_path="/static")
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
 
@@ -1490,6 +1502,63 @@ def logout():
 @app.get("/healthz")
 def healthz():
     return "ok"
+
+
+# ── Erweiterung zum Herunterladen ─────────────────────────────────────────────
+EXTENSION_FOLDER = "jd-webui-clicknload"
+EXTENSION_README = """JD WebUI Click'n'Load - Browser-Erweiterung (Chrome, Brave, Edge)
+
+1. Diesen Ordner an einen festen Ort legen, der nicht aufgeräumt wird
+   (z. B. Dokumente\\Tools oder dein Nextcloud-Ordner). Der Browser lädt die
+   Erweiterung bei jedem Start von dort - Ordner weg = Erweiterung weg.
+2. chrome://extensions (Brave: brave://extensions, Edge: edge://extensions) öffnen,
+   "Entwicklermodus" einschalten, "Entpackte Erweiterung laden", diesen Ordner wählen.
+3. Erweiterung anheften und anklicken. Die Server-Adresse ist schon eingetragen:
+   {server}
+   "Verbindung testen" sollte "Verbunden" melden.
+4. Zeigt das Popup "Website-Zugriff fehlt": auf "Zugriff erlauben" klicken
+   (oder in den Details der Erweiterung "Websitezugriff: Auf allen Websites").
+
+Neue Version: ZIP erneut aus der WebUI laden, den alten Ordner ersetzen und in
+chrome://extensions bei der Erweiterung auf "Neu laden" klicken. Die Einstellungen bleiben.
+"""
+
+
+def _cnl_public_url():
+    if CNL_PUBLIC_URL:
+        return CNL_PUBLIC_URL
+    host = urllib.parse.urlsplit("//" + (request.host or "")).hostname or "127.0.0.1"
+    if ":" in host:
+        host = f"[{host}]"   # IPv6
+    return f"http://{host}:{CNL_PUBLIC_PORT}"
+
+
+def _extension_files():
+    for root, dirs, files in os.walk(EXTENSION_DIR):
+        dirs[:] = sorted(d for d in dirs if not d.startswith((".", "_")))   # _metadata von Chrome
+        for name in sorted(files):
+            if name.startswith(".") or name == "config.json":
+                continue
+            path = os.path.join(root, name)
+            yield path, os.path.relpath(path, EXTENSION_DIR).replace(os.sep, "/")
+
+
+@app.get("/extension.zip")
+def extension_zip():
+    if not EXTENSION_DIR:
+        return fail("Die Erweiterung ist in diesem Image nicht enthalten.", 404)
+    server = _cnl_public_url()
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for path, rel in _extension_files():
+            z.write(path, f"{EXTENSION_FOLDER}/{rel}")
+        z.writestr(f"{EXTENSION_FOLDER}/config.json", json.dumps({"server": server}, indent=2) + "\n")
+        z.writestr(f"{EXTENSION_FOLDER}/LIESMICH.txt", EXTENSION_README.format(server=server).replace("\n", "\r\n"))
+    log.info("Erweiterung heruntergeladen von %s (Server %s)", request.remote_addr, server)
+    return Response(buf.getvalue(), mimetype="application/zip", headers={
+        "Content-Disposition": f'attachment; filename="{EXTENSION_FOLDER}.zip"',
+        "Cache-Control": "no-store",
+    })
 
 
 @app.get("/")

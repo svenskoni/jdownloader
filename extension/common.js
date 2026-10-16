@@ -40,11 +40,24 @@ function normalizeServer(input) {
   return (u.origin + u.pathname).replace(/\/+$/, "");
 }
 
+// Aus der WebUI heruntergeladene Erweiterung: config.json enthält die Server-Adresse.
+// Sie gilt, solange im Browser noch nichts gespeichert ist (frische Installation).
+async function packagedConfig() {
+  try {
+    const r = await fetch(chrome.runtime.getURL("config.json"), { cache: "no-store" });
+    return r.ok ? await r.json() : {};
+  } catch {
+    return {};
+  }
+}
+
 async function loadConfig() {
-  const c = await chrome.storage.sync.get(CNL_DEFAULTS);
+  const c = await chrome.storage.sync.get({ ...CNL_DEFAULTS, server: null });
+  let raw = c.server;
+  if (raw === null || raw === undefined) raw = (await packagedConfig()).server || "";
   let server = "";
   try {
-    server = normalizeServer(c.server);
+    server = normalizeServer(raw);
   } catch {
     server = "";
   }

@@ -205,6 +205,13 @@ select[hidden] { display: none; }
 .drop:hover, .drop.over, .drop:focus { border-color: var(--accent); color: var(--text); outline: none; }
 .cnl-info { margin-top: 8px; overflow-wrap: anywhere; }
 .cnl-info.err { color: var(--error); }
+.ext-help { margin-top: 10px; color: var(--muted); }
+.ext-help summary { cursor: pointer; width: fit-content; }
+.ext-help summary:hover { color: var(--text); }
+.ext-help p { margin: 10px 0 6px; }
+.ext-help a.btn { text-decoration: none; display: inline-block; }
+.ext-help ol { margin: 6px 0 0; padding-left: 20px; display: grid; gap: 4px; }
+.ext-help code { font-size: 12px; background: var(--bg); padding: 1px 4px; border-radius: 4px; }
 
 /* ── Hinweise ──────────────────────────────────────────────── */
 .banner, .warn {

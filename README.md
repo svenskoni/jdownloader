@@ -63,6 +63,7 @@ Die JD-Konfiguration unter `/opt/jdownloader/config` bleibt erhalten.
 | `CNL_ACTION` | optional, was mit per Click'n'Load geschickten Paketen passiert: `grabber` = bleiben im Linkgrabber (Standard), `queue` = kommen in die Download-Liste, `start` = kommen in die Download-Liste und starten |
 | `SESSION_DAYS` | optional, so viele Tage bleibt ein Browser nach „Angemeldet bleiben“ angemeldet, Standard `365` |
 | `CATEGORIES` | optional, eigene Kategorien, siehe [Kategorien](#6-kategorien) |
+| `CNL_PUBLIC_URL` | optional, Adresse des Click'n'Load-Ports, die in die heruntergeladene Erweiterung geschrieben wird, z. B. `http://192.168.1.10:9666`. Leer = Hostname der WebUI + `CNL_PORT` |
 | `FALLBACK_DIR` | optional, wohin Pakete ohne Kategorie gehen, Standard `/fertig` (= `Fertig` auf der HDD) |
 | `STAGING_DIR` | optional, Zwischenablage (SSD), Standard `/output`. Leer = wie früher direkt ins Ziel laden, siehe [Download-Ordner](#5-download-ordner-ssd--hdd) |
 | `POST_INTERVAL` | optional, alle wie viele Sekunden die WebUI nach fertigen Paketen schaut, Standard `20` |
@@ -142,11 +143,11 @@ Download-Seiten schicken die Links beim Klick auf den Click'n'Load-Button an `ht
 Auf dem Server ist dafür nur eines zu tun: In Portainer `CNL_ALLOWED` auf die IP(s) der PCs setzen, von denen Click'n'Load kommen darf, und den Stack neu deployen. Für die Brücke am PC gibt es zwei Wege.
 
 ### Variante A: Chrome-Erweiterung (empfohlen)
-Funktioniert in Chrome, Edge und Brave, auf jedem Gerät und ohne Änderungen an Windows. Der Ordner `extension/` in diesem Repo ist die Erweiterung.
+Funktioniert in Chrome, Edge und Brave, auf jedem Gerät und ohne Änderungen an Windows. Der Ordner `extension/` in diesem Repo ist die Erweiterung, die WebUI bietet sie auch zum Download an.
 
-1. Repo auf den PC holen (GitHub: *Code → Download ZIP*, entpacken). Den Ordner danach **nicht löschen oder verschieben**, der Browser lädt die Erweiterung von dort.
-2. `chrome://extensions` öffnen (Edge: `edge://extensions`), **Entwicklermodus** einschalten, **Entpackte Erweiterung laden** und den Ordner `extension` auswählen.
-3. Erweiterung an die Symbolleiste anheften, Symbol anklicken, Adresse des Click'n'Load-Ports eintragen, z. B. `http://192.168.1.10:9666`, und **Speichern**. Erwartet: „Verbunden. WebUI und JDownloader erreichbar.“
+1. In der WebUI unter „Hinzufügen“ **Click'n'Load-Erweiterung → Erweiterung herunterladen (ZIP)**. Die ZIP enthält die Adresse des Click'n'Load-Ports schon (Hostname, unter dem du die WebUI geöffnet hast, plus `CNL_PORT`). Entpacken und den Ordner an einen **festen Ort** legen, z. B. in den Nextcloud-Ordner. Der Browser lädt die Erweiterung bei jedem Start von dort: Ordner gelöscht = Erweiterung weg. Dann einfach die ZIP neu laden.
+2. `chrome://extensions` öffnen (Brave: `brave://extensions`, Edge: `edge://extensions`), **Entwicklermodus** einschalten, **Entpackte Erweiterung laden** und den Ordner auswählen.
+3. Erweiterung an die Symbolleiste anheften, Symbol anklicken. Die Adresse steht schon drin (sonst eintragen, z. B. `http://192.168.1.10:9666`, und **Speichern**). **Verbindung testen**, erwartet: „Verbunden. WebUI und JDownloader erreichbar.“
 4. Zeigt das Popup **„Website-Zugriff fehlt“** (am Symbol ein rotes „!“), auf **Zugriff erlauben** klicken. Ohne diesen Zugriff kommt nichts an. Brave und Chrome stellen ihn je nach Einstellung auf „Bei Klick“. Alternativ in den Details der Erweiterung bei „Websitezugriff“ **„Auf allen Websites“** wählen.
 5. Auf einer Download-Seite den Click'n'Load-Button drücken. Es erscheint eine Benachrichtigung, und in der WebUI steht unter dem DLC-Feld „Click'n'Load zuletzt …“.
 
@@ -239,7 +240,7 @@ Danach im Browser `http://127.0.0.1:8091` öffnen. Mit `MOCK_SPEED_MB=40` simuli
 ## Dateien
 ```
 docker-compose.yml      Portainer-Stack
-webui/Dockerfile        python:3.12-alpine + gunicorn, läuft als UID 1000
+webui/Dockerfile        python:3.12-alpine + gunicorn, läuft als UID 1000 (Build-Kontext: Repo)
 webui/app.py            Backend (Flask): Login, Übersicht, Steuerung, Hinzufügen, Click'n'Load
 webui/cnl.py            Click'n'Load: Schlüssel lesen, Links entschlüsseln, IP-Filter
 webui/jdapi.py          Client für die lokale JD-API
@@ -247,5 +248,5 @@ webui/jd_init.py        Init-Skript: schaltet die JD-API in der Config frei
 webui/mover.py          Verschiebt fertige Pakete von der SSD ins Ziel (auch über Dateisystemgrenzen)
 webui/static/           Oberfläche (HTML/CSS/JS, keine externen Abhängigkeiten)
 webui/dev/mock_jd.py    Fake-JDownloader für lokale Tests (nicht im Image)
-extension/              Chrome-/Edge-Erweiterung für Click'n'Load (wird nicht ins Image gebaut)
+extension/              Chrome-/Brave-/Edge-Erweiterung für Click'n'Load (im Image, Download über die WebUI)
 ```

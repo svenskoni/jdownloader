@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "JD WebUI Click'n'Load",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Leitet Click'n'Load von Download-Seiten an deine JD WebUI im Heimnetz weiter.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuT9aeDyxoCxYd69xQWx427MPIrAYpUoVFJdPX1fcpSDyK4nIPbJp4kePefA+v6hGYKK1FIcCZnh22jlEvJUGwrQKaZWG9YiQn0fDuhxpgSjqjkAPt8w6jw26vpAWGpFMeSG0DjguQkdiruPIoeOav7MyW3aWOiq2onF1IELXJYgYteJNZdF5btB/CjAmty3ttY6DAO2EKV1dyD2SHhPx4sa7AyHXcbILloNC74i5bCi8BVixk9ymHP9AiNCDmcfUonBhHJ2YeOsej51q833avlViESVIPOqu4/68nXkkN59zbl8JFjXedc1abFB4kt1/lWde1fNpZnG/n+Cfljs2ZQIDAQAB",
   "minimum_chrome_version": "116",
